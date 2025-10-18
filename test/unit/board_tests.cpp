@@ -37,4 +37,11 @@ TEST_CASE("FEN round-trip maintains state", "[board]") {
   REQUIRE(pos.to_fen() == custom_fen);
 }
 
+TEST_CASE("move_to_uci emits coordinate moves", "[board]") {
+  const Move move = make_move(Square::E7, Square::E8, MoveFlag::Promotion, PieceType::Queen);
+  REQUIRE(move_to_uci(move) == "e7e8q");
+  const Move quiet = make_move(Square::B1, Square::C3);
+  REQUIRE(move_to_uci(quiet) == "b1c3");
+}
+
 }  // namespace bby::test

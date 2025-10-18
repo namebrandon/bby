@@ -14,5 +14,6 @@ struct InitOptions {
 
 void initialize(const InitOptions& opts = {});
 std::string cpu_feature_summary();
+const InitOptions& init_options();
 
 }  // namespace bby

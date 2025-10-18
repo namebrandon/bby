@@ -71,4 +71,6 @@ private:
   std::uint64_t zobrist_{0};
 };
 
+std::string move_to_uci(Move move);
+
 }  // namespace bby

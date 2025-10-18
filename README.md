@@ -5,12 +5,11 @@ A modern, production-focused chess engine engineered for deterministic performan
 ## Getting Started
 
 ```bash
-# configure and build the debug profile
-device=debug
-make ${device}
+# configure and build the debug profile (artifacts land in build/<profile>/)
+make debug
 
 # run the engine (UCI protocol)
-./out/${device}/bby
+./build/debug/bby
 # inside the engine, try `bench` to run the deterministic 50-position suite
 # debug helpers: `trace status`, `assert`, `repropack`
 ```
@@ -19,18 +18,34 @@ See `docs/` and `external/docs/bby_project.md` for the full development plan, qu
 
 ## Build Profiles
 
-All primary build profiles funnel through CMake and emit binaries in `out/<profile>/`:
+All primary build profiles funnel through CMake and emit binaries in `build/<profile>/`:
 
 - `make debug` – `-O0 -g -DGLOBAL_DEBUG_LEVEL=2`
-- `make release` – `-O3 -DNDEBUG -march=native`
+- `make release` – `-O3 -DNDEBUG`
 - `make profile` – `-O3 -pg -DNDEBUG`
-- `make sanitize` – `-O1 -g -fsanitize=address,undefined`
-- `make tsan` – `-O1 -g -fsanitize=thread`
+- `make sanitize` – RelWithDebInfo with AddressSanitizer + UndefinedBehaviorSanitizer
+- `make tsan` – RelWithDebInfo with ThreadSanitizer
 
 Utility targets:
 
 - `make perft` – build the perft oracle in `tools/`
-- `make clean` – remove the `out/` build tree only (preserves caches/packages)
+- `make sanitize-test` – build + run unit tests under ASan/UBSan
+- `make tsan-test` – build + run unit tests under TSan
+- `make clean` – remove the `build/` tree only (preserves caches/packages)
+
+### Sanitizer Workflows
+
+The sanitizer targets configure dedicated build trees with the correct instrumentation:
+
+```bash
+# AddressSanitizer + UndefinedBehaviorSanitizer
+make sanitize-test
+
+# ThreadSanitizer (slow; keep thread count low)
+make tsan-test
+```
+
+The commands compile the engine and unit tests with the chosen sanitizer, then execute the Catch2 suite via `ctest --output-on-failure`.
 
 ### Tests
 

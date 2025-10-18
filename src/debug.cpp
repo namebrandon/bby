@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <iostream>
+#include <mutex>
+#include <sstream>
 
 namespace bby {
 namespace {
@@ -10,6 +13,11 @@ namespace {
 std::array<bool, static_cast<std::size_t>(TraceTopic::Count)> &trace_flags() {
   static std::array<bool, static_cast<std::size_t>(TraceTopic::Count)> flags{};
   return flags;
+}
+
+std::mutex& trace_mutex() {
+  static std::mutex mutex;
+  return mutex;
 }
 
 std::string lowercase(std::string_view sv) {
@@ -66,6 +74,17 @@ std::string_view trace_topic_name(TraceTopic topic) {
       break;
   }
   return "unknown";
+}
+
+void trace_emit(TraceTopic topic, std::string_view message) {
+  if (!trace_enabled(topic)) {
+    return;
+  }
+  std::ostringstream oss;
+  oss << "trace " << trace_topic_name(topic) << ' ' << message;
+  std::lock_guard<std::mutex> lock(trace_mutex());
+  std::cout << "info string " << oss.str() << '\n';
+  std::cout.flush();
 }
 
 InvariantStatus validate_position(const Position& pos) {

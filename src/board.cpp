@@ -1,4 +1,5 @@
 #include "board.h"
+#include "debug.h"
 
 #include <algorithm>
 #include <array>
@@ -356,6 +357,10 @@ bool Position::in_check(Color color) const {
 }
 
 void Position::generate_moves(MoveList& out, GenStage stage) const {
+  const bool trace_moves = trace_enabled(TraceTopic::Moves);
+  std::array<Move, 8> samples{};
+  std::size_t sample_count = 0;
+
   MoveList pseudo;
   generate_pseudo_legal(pseudo);
   out.clear();
@@ -381,7 +386,40 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
     const_cast<Position*>(this)->unmake(move, u);
     if (legal) {
       out.push_back(move);
+      if (trace_moves && sample_count < samples.size()) {
+        samples[sample_count++] = move;
+      }
     }
+  }
+
+  if (trace_moves) {
+    const char* stage_name = "all";
+    switch (stage) {
+      case GenStage::Captures:
+        stage_name = "captures";
+        break;
+      case GenStage::Quiets:
+        stage_name = "quiets";
+        break;
+      case GenStage::All:
+        stage_name = "all";
+        break;
+    }
+    std::ostringstream oss;
+    oss << "stage=" << stage_name
+        << " stm=" << (side_ == Color::White ? "white" : "black")
+        << " pseudo=" << pseudo.size()
+        << " legal=" << out.size();
+    if (sample_count > 0) {
+      oss << " moves=";
+      for (std::size_t idx = 0; idx < sample_count; ++idx) {
+        if (idx > 0) {
+          oss << ',';
+        }
+        oss << move_to_uci(samples[idx]);
+      }
+    }
+    trace_emit(TraceTopic::Moves, oss.str());
   }
 }
 
@@ -953,4 +991,37 @@ void Position::generate_pseudo_legal(MoveList& out) const {
     }
   }
 }
+
+std::string move_to_uci(Move move) {
+  if (move.is_null()) {
+    return "0000";
+  }
+  std::string result;
+  result += square_to_string(from_square(move));
+  result += square_to_string(to_square(move));
+  const PieceType promo = promotion_type(move);
+  if (promo != PieceType::None) {
+    char suffix = 'q';
+    switch (promo) {
+      case PieceType::Queen:
+        suffix = 'q';
+        break;
+      case PieceType::Rook:
+        suffix = 'r';
+        break;
+      case PieceType::Bishop:
+        suffix = 'b';
+        break;
+      case PieceType::Knight:
+        suffix = 'n';
+        break;
+      default:
+        suffix = 'q';
+        break;
+    }
+    result.push_back(suffix);
+  }
+  return result;
+}
+
 }  // namespace bby

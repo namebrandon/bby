@@ -30,4 +30,8 @@ std::string cpu_feature_summary() {
   return oss.str();
 }
 
+const InitOptions& init_options() {
+  return opts_storage();
+}
+
 }  // namespace bby

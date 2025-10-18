@@ -22,6 +22,7 @@ void set_trace_topic(TraceTopic topic, bool enabled);
 bool trace_enabled(TraceTopic topic);
 std::optional<TraceTopic> trace_topic_from_string(std::string_view token);
 std::string_view trace_topic_name(TraceTopic topic);
+void trace_emit(TraceTopic topic, std::string_view message);
 
 struct InvariantStatus {
   bool ok{true};

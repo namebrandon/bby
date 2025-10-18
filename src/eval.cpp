@@ -1,14 +1,31 @@
 #include "eval.h"
 
+#include <sstream>
+
+#include "debug.h"
+
 namespace bby {
 
 Score evaluate(const Position& pos, EvalTrace* trace) {
-  const Score base = pos.in_check(Color::White) ? 0 : 10;
+  const bool in_check = pos.in_check(pos.side_to_move());
+  const Score midgame = in_check ? -20 : 10;
+  const Score endgame = midgame;
+
   if (trace) {
-    trace->midgame = base;
-    trace->endgame = base;
+    trace->midgame = midgame;
+    trace->endgame = endgame;
   }
-  return base;
+
+  if (trace_enabled(TraceTopic::Eval)) {
+    std::ostringstream oss;
+    oss << "stm=" << (pos.side_to_move() == Color::White ? "white" : "black")
+        << " check=" << (in_check ? "yes" : "no")
+        << " mid=" << midgame
+        << " end=" << endgame;
+    trace_emit(TraceTopic::Eval, oss.str());
+  }
+
+  return midgame;
 }
 
 }  // namespace bby

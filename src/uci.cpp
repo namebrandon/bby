@@ -7,6 +7,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <iomanip>
 #include <iostream>
 #include <mutex>
 #include <optional>
@@ -196,6 +197,13 @@ struct SearchCommand {
   Limits limits{};
 };
 
+struct SearchSnapshot {
+  Position position{};
+  SearchResult result{};
+  Limits limits{};
+  bool stopped{false};
+};
+
 class SearchWorker {
  public:
   SearchWorker() : thread_(&SearchWorker::run, this) {}
@@ -229,6 +237,15 @@ class SearchWorker {
 
   bool is_busy() const {
     return busy_.load(std::memory_order_acquire);
+  }
+
+  bool last_snapshot(SearchSnapshot& out) const {
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    if (!has_snapshot_) {
+      return false;
+    }
+    out = last_snapshot_;
+    return true;
   }
 
   void shutdown() {
@@ -266,7 +283,17 @@ class SearchWorker {
           Limits limits = cmd.limits;
           SearchResult result = search(local, limits);
 
-          if (stop_flag_.load(std::memory_order_acquire)) {
+          const bool stopped = stop_flag_.load(std::memory_order_acquire);
+          {
+            std::lock_guard<std::mutex> lock(snapshot_mutex_);
+            last_snapshot_.position = local;
+            last_snapshot_.result = result;
+            last_snapshot_.limits = limits;
+            last_snapshot_.stopped = stopped;
+            has_snapshot_ = true;
+          }
+
+          if (stopped) {
             write_line("bestmove 0000");
           } else {
             write_line("bestmove " + format_move(result.best));
@@ -292,6 +319,9 @@ class SearchWorker {
   std::atomic<bool> busy_{false};
   std::mutex mutex_;
   std::condition_variable ready_cv_;
+  mutable std::mutex snapshot_mutex_;
+  SearchSnapshot last_snapshot_{};
+  bool has_snapshot_{false};
 };
 
 SearchWorker g_worker;
@@ -551,14 +581,56 @@ void handle_assert(const UciState& state) {
 
 void handle_repropack(const UciState& state) {
   std::ostringstream oss;
-  const char* stm = state.pos.side_to_move() == Color::White ? "white" : "black";
-  oss << "repro fen=" << state.pos.to_fen()
-      << " zobrist=" << state.pos.zobrist()
+  SearchSnapshot snapshot;
+  const bool have_snapshot = g_worker.last_snapshot(snapshot);
+  const Position& repro_pos = have_snapshot ? snapshot.position : state.pos;
+  const char* stm = repro_pos.side_to_move() == Color::White ? "white" : "black";
+  oss << "repro fen=" << repro_pos.to_fen()
+      << " zobrist=" << repro_pos.zobrist()
       << " stm=" << stm
       << " hash_mb=" << state.hash_mb
       << " threads=" << state.threads
-      << " halfmove=" << static_cast<int>(state.pos.halfmove_clock())
-      << " fullmove=" << static_cast<int>(state.pos.fullmove_number());
+      << " halfmove=" << static_cast<int>(repro_pos.halfmove_clock())
+      << " fullmove=" << static_cast<int>(repro_pos.fullmove_number());
+
+  if (have_snapshot) {
+    oss << " depth=" << snapshot.result.depth
+        << " nodes=" << snapshot.result.nodes
+        << " stopped=" << (snapshot.stopped ? "true" : "false");
+    if (!snapshot.result.pv.line.empty()) {
+      oss << " pv=";
+      for (std::size_t idx = 0; idx < snapshot.result.pv.line.size(); ++idx) {
+        if (idx > 0) {
+          oss << ',';
+        }
+        oss << move_to_uci(snapshot.result.pv.line[idx]);
+      }
+    }
+    const Limits& limits = snapshot.limits;
+    if (limits.depth >= 0) {
+      oss << " limit_depth=" << limits.depth;
+    }
+    if (limits.nodes >= 0) {
+      oss << " limit_nodes=" << limits.nodes;
+    }
+    if (limits.movetime_ms >= 0) {
+      oss << " limit_movetime_ms=" << limits.movetime_ms;
+    }
+    if (limits.wtime_ms >= 0) {
+      oss << " limit_wtime_ms=" << limits.wtime_ms;
+    }
+    if (limits.btime_ms >= 0) {
+      oss << " limit_btime_ms=" << limits.btime_ms;
+    }
+  }
+
+  const auto& opts = init_options();
+  oss << " rng_seed=0x" << std::hex << opts.rng_seed << std::dec;
+
+  oss << " options=Threads:" << state.threads << ",Hash:" << state.hash_mb;
+  if (state.debug) {
+    oss << ",Debug:on";
+  }
   send_info(oss.str());
 }
 
@@ -614,6 +686,64 @@ void handle_uci(const UciState& state) {
   write_line("uciok");
 }
 
+bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdown) {
+  std::string_view view = line;
+  const std::string command = consume_token(view);
+
+  if (command.empty()) {
+    return true;
+  }
+
+  if (command == "uci") {
+    handle_uci(state);
+  } else if (command == "isready") {
+    g_worker.wait_idle();
+    send_readyok();
+  } else if (command == "ucinewgame") {
+    if (g_worker.is_busy()) {
+      g_worker.request_stop();
+      g_worker.wait_idle();
+    }
+    handle_ucinewgame(state);
+  } else if (command == "position") {
+    handle_position(state, view);
+  } else if (command == "go") {
+    handle_go(state, view);
+  } else if (command == "stop") {
+    g_worker.request_stop();
+    g_worker.wait_idle();
+    send_info("stop acknowledged");
+  } else if (command == "ponderhit") {
+    handle_ponderhit();
+  } else if (command == "register") {
+    handle_register(view);
+  } else if (command == "bench") {
+    handle_bench(view);
+  } else if (command == "trace") {
+    handle_trace(view);
+  } else if (command == "assert") {
+    handle_assert(state);
+  } else if (command == "repropack") {
+    handle_repropack(state);
+  } else if (command == "quit") {
+    if (allow_shutdown) {
+      g_worker.shutdown();
+    } else {
+      g_worker.request_stop();
+      g_worker.wait_idle();
+    }
+    return false;
+  } else if (command == "setoption") {
+    handle_setoption(state, view);
+  } else if (command == "debug") {
+    handle_debug(state, view);
+  } else {
+    send_info("unknown command '" + command + "'");
+  }
+
+  return true;
+}
+
 }  // namespace
 
 int uci_main() {
@@ -623,53 +753,33 @@ int uci_main() {
   std::string line;
 
   while (std::getline(std::cin, line)) {
-    std::string_view view(line);
-    const std::string command = consume_token(view);
-
-    if (command == "uci") {
-      handle_uci(state);
-    } else if (command == "isready") {
-      g_worker.wait_idle();
-      send_readyok();
-    } else if (command == "ucinewgame") {
-      if (g_worker.is_busy()) {
-        g_worker.request_stop();
-        g_worker.wait_idle();
-      }
-      handle_ucinewgame(state);
-    } else if (command == "position") {
-      handle_position(state, view);
-    } else if (command == "go") {
-      handle_go(state, view);
-    } else if (command == "stop") {
-      g_worker.request_stop();
-      g_worker.wait_idle();
-      send_info("stop acknowledged");
-    } else if (command == "ponderhit") {
-      handle_ponderhit();
-    } else if (command == "register") {
-      handle_register(view);
-    } else if (command == "bench") {
-      handle_bench(view);
-    } else if (command == "trace") {
-      handle_trace(view);
-    } else if (command == "assert") {
-      handle_assert(state);
-    } else if (command == "repropack") {
-      handle_repropack(state);
-    } else if (command == "quit") {
-      g_worker.shutdown();
+    if (!dispatch_command(state, line, true)) {
       break;
-    } else if (command == "setoption") {
-      handle_setoption(state, view);
-    } else if (command == "debug") {
-      handle_debug(state, view);
-    } else if (!command.empty()) {
-      send_info("unknown command '" + command + "'");
     }
   }
 
   return 0;
+}
+
+void uci_fuzz_feed(std::string_view payload) {
+  initialize();
+
+  UciState state;
+  std::string_view remaining = payload;
+  while (!remaining.empty()) {
+    const auto newline = remaining.find('\n');
+    const std::string_view line =
+        (newline == std::string_view::npos) ? remaining : remaining.substr(0, newline);
+    if (!dispatch_command(state, line, false)) {
+      break;
+    }
+    if (newline == std::string_view::npos) {
+      break;
+    }
+    remaining.remove_prefix(newline + 1);
+  }
+
+  g_worker.wait_idle();
 }
 
 }  // namespace bby

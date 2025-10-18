@@ -19,10 +19,40 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "RelWithDebInfo" CACHE STRING "Build type" FORCE)
 endif()
 
-set(OUTPUT_ROOT "${CMAKE_BINARY_DIR}/out/${CMAKE_BUILD_TYPE}")
-set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${OUTPUT_ROOT}")
-set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${OUTPUT_ROOT}")
-set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${OUTPUT_ROOT}")
+set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+
+set(BBY_SANITIZER "" CACHE STRING "Sanitizer instrumentation (asan-ubsan, tsan, or empty)")
+
+set(_bby_sanitize_compile_flags "")
+set(_bby_sanitize_link_flags "")
+
+if(BBY_SANITIZER STREQUAL "asan-ubsan")
+  list(APPEND _bby_sanitize_compile_flags
+    -fsanitize=address,undefined
+    -fno-omit-frame-pointer
+    -fno-sanitize-recover=all)
+  list(APPEND _bby_sanitize_link_flags
+    -fsanitize=address,undefined)
+elseif(BBY_SANITIZER STREQUAL "tsan")
+  list(APPEND _bby_sanitize_compile_flags
+    -fsanitize=thread
+    -fno-omit-frame-pointer)
+  list(APPEND _bby_sanitize_link_flags
+    -fsanitize=thread)
+elseif(BBY_SANITIZER)
+  message(WARNING "Unknown sanitizer configuration '${BBY_SANITIZER}'")
+endif()
+
+if(_bby_sanitize_compile_flags)
+  if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options(${_bby_sanitize_compile_flags})
+    add_link_options(${_bby_sanitize_link_flags})
+  else()
+    message(WARNING "Sanitizers requested but compiler '${CMAKE_CXX_COMPILER_ID}' is not supported")
+  endif()
+endif()
 
 add_library(bby_core
   src/common.cpp
@@ -33,6 +63,8 @@ add_library(bby_core
   src/eval.cpp
   src/hash.cpp
   src/perft.cpp
+  src/pgn.cpp
+  src/epd/epd.cpp
   src/search.cpp
   src/timeman.cpp
   src/uci.cpp
