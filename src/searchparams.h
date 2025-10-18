@@ -1,0 +1,25 @@
+#pragma once
+// searchparams.h -- POD containers for search configuration and UCI options.
+// These structures are shared between the UCI layer, search, and time manager.
+
+#include <cstdint>
+
+namespace bby {
+
+struct Limits {
+  std::int64_t movetime_ms{-1};
+  std::int64_t nodes{-1};
+  std::int16_t depth{-1};
+  std::int64_t wtime_ms{-1};
+  std::int64_t btime_ms{-1};
+  std::int64_t winc_ms{0};
+  std::int64_t binc_ms{0};
+  bool infinite{false};
+};
+
+struct SearchKnobs {
+  bool enable_null_move{true};
+  bool enable_lmr{true};
+};
+
+}  // namespace bby

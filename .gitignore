@@ -8,6 +8,7 @@ external/
 # Build artifacts
 build/
 build-*/
+out/
 *.d
 *.o
 *.obj
