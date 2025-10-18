@@ -1,0 +1,63 @@
+# External volume
+external/
+
+# Ignore hidden files by default; add exceptions below as needed
+.*
+!.gitignore
+
+# Build artifacts
+build/
+build-*/
+*.d
+*.o
+*.obj
+*.lo
+*.la
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+*.elf
+*.map
+
+# CMake and Make
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+Makefile.in
+
+# Compiler/linker outputs
+*.gcno
+*.gcda
+*.gcov
+*.gcov.json
+*.gcda.json
+*.gcno.json
+*.prof
+*.profraw
+*.profdata
+*.pdb
+
+# IDE/tooling
+.idea/
+.vscode/
+*.code-workspace
+*.sublime-*
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*.cache
+*.bak
