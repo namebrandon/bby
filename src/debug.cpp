@@ -20,6 +20,11 @@ std::mutex& trace_mutex() {
   return mutex;
 }
 
+TraceWriter& trace_writer() {
+  static TraceWriter writer = nullptr;
+  return writer;
+}
+
 std::string lowercase(std::string_view sv) {
   std::string out(sv.begin(), sv.end());
   std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) {
@@ -36,6 +41,11 @@ void set_trace_topic(TraceTopic topic, bool enabled) {
 
 bool trace_enabled(TraceTopic topic) {
   return trace_flags()[static_cast<std::size_t>(topic)];
+}
+
+void set_trace_writer(TraceWriter writer) {
+  std::lock_guard<std::mutex> lock(trace_mutex());
+  trace_writer() = writer;
 }
 
 std::optional<TraceTopic> trace_topic_from_string(std::string_view token) {
@@ -82,9 +92,14 @@ void trace_emit(TraceTopic topic, std::string_view message) {
   }
   std::ostringstream oss;
   oss << "trace " << trace_topic_name(topic) << ' ' << message;
+  const std::string payload = oss.str();
   std::lock_guard<std::mutex> lock(trace_mutex());
-  std::cout << "info string " << oss.str() << '\n';
-  std::cout.flush();
+  if (const TraceWriter writer = trace_writer()) {
+    writer(topic, payload);
+  } else {
+    std::cout << "info string " << payload << '\n';
+    std::cout.flush();
+  }
 }
 
 InvariantStatus validate_position(const Position& pos) {

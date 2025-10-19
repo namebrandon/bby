@@ -22,7 +22,7 @@ TEST_CASE("PGN reader parses tagged game", "[pgn]") {
   REQUIRE(game.tags.at("Event") == "Test Match");
   REQUIRE(game.tags.at("Site") == "Internet");
   REQUIRE(game.moves.size() == 8);
-  REQUIRE(game.moves[4].comment == "Ruy Lopez");
+  REQUIRE(game.moves[5].comment == "Ruy Lopez");
   REQUIRE(game.result == "1-0");
   REQUIRE_FALSE(reader.read_next(game, error));
 }

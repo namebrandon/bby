@@ -83,7 +83,7 @@ std::string sanitize_token(std::string token) {
 }
 
 void flush_token(std::string& token,
-                 std::string& pending_comment,
+                 std::string& staged_comment,
                  PgnGame& game) {
   const std::string trimmed = trim_copy(token);
   token.clear();
@@ -102,17 +102,35 @@ void flush_token(std::string& token,
 
   PgnMove move;
   move.san = std::move(san);
-  if (!pending_comment.empty()) {
-    move.comment = std::move(pending_comment);
-    pending_comment.clear();
+  if (!staged_comment.empty()) {
+    move.comment = std::move(staged_comment);
+    staged_comment.clear();
   }
   game.moves.push_back(std::move(move));
+}
+
+void append_comment(PgnGame& game, std::string& staged_comment, const std::string& comment) {
+  if (comment.empty()) {
+    return;
+  }
+  if (!game.moves.empty()) {
+    std::string& dst = game.moves.back().comment;
+    if (!dst.empty()) {
+      dst.push_back('\n');
+    }
+    dst.append(comment);
+  } else {
+    if (!staged_comment.empty()) {
+      staged_comment.push_back('\n');
+    }
+    staged_comment.append(comment);
+  }
 }
 
 void parse_moves_block(const std::string& block, PgnGame& game) {
   std::string token;
   std::string comment_buffer;
-  std::string pending_comment;
+  std::string staged_comment;
   bool in_comment = false;
   bool line_comment = false;
   int variation_depth = 0;
@@ -132,7 +150,8 @@ void parse_moves_block(const std::string& block, PgnGame& game) {
     if (in_comment) {
       if (ch == '}') {
         in_comment = false;
-        pending_comment = trim_copy(comment_buffer);
+        const std::string comment_text = trim_copy(comment_buffer);
+        append_comment(game, staged_comment, comment_text);
         comment_buffer.clear();
       } else {
         comment_buffer.push_back(ch);
@@ -164,14 +183,26 @@ void parse_moves_block(const std::string& block, PgnGame& game) {
     }
 
     if (is_whitespace(ch)) {
-      flush_token(token, pending_comment, game);
+      flush_token(token, staged_comment, game);
       continue;
     }
 
     token.push_back(ch);
   }
 
-  flush_token(token, pending_comment, game);
+  flush_token(token, staged_comment, game);
+  if (!comment_buffer.empty()) {
+    const std::string comment_text = trim_copy(comment_buffer);
+    append_comment(game, staged_comment, comment_text);
+  }
+  if (!staged_comment.empty() && !game.moves.empty()) {
+    std::string& dst = game.moves.back().comment;
+    if (!dst.empty()) {
+      dst.push_back('\n');
+    }
+    dst.append(staged_comment);
+    staged_comment.clear();
+  }
 }
 
 }  // namespace

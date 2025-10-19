@@ -28,10 +28,16 @@ namespace bby {
 namespace {
 
 std::mutex g_io_mutex;
+UciWriter g_output_writer = nullptr;
 
 void write_line(const std::string& text) {
   std::lock_guard<std::mutex> lock(g_io_mutex);
-  std::cout << text << '\n';
+  if (const UciWriter writer = g_output_writer) {
+    writer(text);
+  } else {
+    std::cout << text << '\n';
+    std::cout.flush();
+  }
 }
 
 template <typename T, std::size_t Capacity>
@@ -745,6 +751,11 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
 }
 
 }  // namespace
+
+void set_uci_writer(UciWriter writer) {
+  std::lock_guard<std::mutex> lock(g_io_mutex);
+  g_output_writer = writer;
+}
 
 int uci_main() {
   initialize();

@@ -62,6 +62,14 @@ Quick perft probe:
 ./out/debug/bby-perft --depth 4 --fen "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 ```
 
+### Manual QA Checklist
+
+Run these locally before large merges or tagging a release:
+
+- `ctest --test-dir build/debug --output-on-failure`
+- `make sanitize-test` (Address/UB sanitizers)
+- `make tsan-test` (ThreadSanitizer; slower, run when touching threading code)
+
 ## Repository Layout (summary)
 
 ```

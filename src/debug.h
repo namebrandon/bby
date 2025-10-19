@@ -24,6 +24,9 @@ std::optional<TraceTopic> trace_topic_from_string(std::string_view token);
 std::string_view trace_topic_name(TraceTopic topic);
 void trace_emit(TraceTopic topic, std::string_view message);
 
+using TraceWriter = void (*)(TraceTopic topic, std::string_view payload);
+void set_trace_writer(TraceWriter writer);
+
 struct InvariantStatus {
   bool ok{true};
   std::string message{"ok"};
