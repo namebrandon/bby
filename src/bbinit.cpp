@@ -3,6 +3,7 @@
 #include <mutex>
 #include <sstream>
 
+#include "attacks.h"
 #include "common.h"
 
 namespace bby {
@@ -20,7 +21,10 @@ std::once_flag& init_flag() {
 }  // namespace
 
 void initialize(const InitOptions& opts) {
-  std::call_once(init_flag(), [&]() { opts_storage() = opts; });
+  std::call_once(init_flag(), [&]() {
+    opts_storage() = opts;
+    init_attacks(opts.enable_bmi2);
+  });
 }
 
 std::string cpu_feature_summary() {

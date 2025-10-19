@@ -58,6 +58,7 @@ add_library(bby_core
   src/common.cpp
   src/bbinit.cpp
   src/board.cpp
+  src/attacks.cpp
   src/debug.cpp
   src/moveorder.cpp
   src/eval.cpp
@@ -76,6 +77,7 @@ target_include_directories(bby_core PUBLIC src)
 
 target_compile_options(bby_core PRIVATE
   $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-Wall -Wextra -Wshadow -Wconversion -Wpedantic>
+  $<$<CXX_COMPILER_ID:GNU,Clang,AppleClang>:-mbmi2 -mpopcnt>
   $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 

@@ -33,6 +33,7 @@ public:
   [[nodiscard]] Square king_square(Color color) const { return kings_[color_index(color)]; }
   [[nodiscard]] std::uint8_t castling_rights() const { return castling_; }
   [[nodiscard]] Square en_passant_square() const { return ep_square_; }
+  [[nodiscard]] Bitboard pieces(Color color, PieceType type) const;
 
   void generate_moves(MoveList& out, GenStage stage) const;
   bool is_legal(Move m) const;
@@ -56,6 +57,9 @@ private:
   void recompute_zobrist();
   bool is_square_attacked(Square sq, Color by) const;
   void generate_pseudo_legal(MoveList& out) const;
+  Bitboard pinned_mask(Color us, std::array<Bitboard, 64>& pin_masks) const;
+  Bitboard attacked_squares(Color by) const;
+  bool in_double_check(Color side, Bitboard& checkers) const;
 
   std::array<Piece, 64> squares_{};
   std::array<std::array<Bitboard, 6>, 2> pieces_{{}};

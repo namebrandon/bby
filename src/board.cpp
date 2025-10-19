@@ -1,10 +1,13 @@
 #include "board.h"
+#include "attacks.h"
 #include "debug.h"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
 #include <cctype>
+#include <cstdlib>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -51,52 +54,6 @@ constexpr std::array<std::uint8_t, 64> kSquareToRank = [] {
   return arr;
 }();
 
-constexpr std::array<Bitboard, 64> kKnightAttacks = [] {
-  std::array<Bitboard, 64> arr{};
-  for (int sq = 0; sq < 64; ++sq) {
-    Bitboard attacks = 0ULL;
-    const int file = sq & 7;
-    const int rank = sq >> 3;
-    constexpr std::array<std::pair<int, int>, 8> kOffsets = {{
-        {1, 2},  {2, 1},  {2, -1}, {1, -2},
-        {-1, -2}, {-2, -1}, {-2, 1}, {-1, 2},
-    }};
-    for (const auto& [df, dr] : kOffsets) {
-      const int nf = file + df;
-      const int nr = rank + dr;
-      if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
-        const auto nsq = static_cast<Square>(nr * 8 + nf);
-        attacks |= bit(nsq);
-      }
-    }
-    arr[sq] = attacks;
-  }
-  return arr;
-}();
-
-constexpr std::array<Bitboard, 64> kKingAttacks = [] {
-  std::array<Bitboard, 64> arr{};
-  for (int sq = 0; sq < 64; ++sq) {
-    Bitboard attacks = 0ULL;
-    const int file = sq & 7;
-    const int rank = sq >> 3;
-    for (int df = -1; df <= 1; ++df) {
-      for (int dr = -1; dr <= 1; ++dr) {
-        if (df == 0 && dr == 0) {
-          continue;
-        }
-        const int nf = file + df;
-        const int nr = rank + dr;
-        if (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
-          attacks |= bit(static_cast<Square>(nr * 8 + nf));
-        }
-      }
-    }
-    arr[sq] = attacks;
-  }
-  return arr;
-}();
-
 constexpr Bitboard north(Bitboard bb) { return bb << 8; }
 constexpr Bitboard south(Bitboard bb) { return bb >> 8; }
 
@@ -108,33 +65,51 @@ constexpr Bitboard north_west(Bitboard bb) { return (bb << 7) & ~kFileH; }
 constexpr Bitboard south_east(Bitboard bb) { return (bb >> 7) & ~kFileA; }
 constexpr Bitboard south_west(Bitboard bb) { return (bb >> 9) & ~kFileH; }
 
-Bitboard ray_attacks(Square sq, int df, int dr, Bitboard occ) {
-  Bitboard attacks = 0ULL;
-  int file = static_cast<int>(file_of(sq));
-  int rank = static_cast<int>(rank_of(sq));
-  int nf = file + df;
-  int nr = rank + dr;
-  while (nf >= 0 && nf < 8 && nr >= 0 && nr < 8) {
-    const Square target = static_cast<Square>(nr * 8 + nf);
-    const Bitboard target_bb = bit(target);
-    attacks |= target_bb;
-    if (occ & target_bb) {
-      break;
-    }
-    nf += df;
-    nr += dr;
+constexpr bool on_board(int file, int rank) {
+  return file >= 0 && file < 8 && rank >= 0 && rank < 8;
+}
+
+Bitboard between_squares(Square a, Square b) {
+  Bitboard mask = 0ULL;
+  const int file_a = static_cast<int>(file_of(a));
+  const int rank_a = static_cast<int>(rank_of(a));
+  const int file_b = static_cast<int>(file_of(b));
+  const int rank_b = static_cast<int>(rank_of(b));
+
+  int df = file_b - file_a;
+  int dr = rank_b - rank_a;
+
+  int step_file = (df > 0) - (df < 0);
+  int step_rank = (dr > 0) - (dr < 0);
+
+  if (df == 0 && dr == 0) {
+    return 0ULL;
   }
-  return attacks;
-}
 
-Bitboard bishop_attacks(Square sq, Bitboard occ) {
-  return ray_attacks(sq, 1, 1, occ) | ray_attacks(sq, 1, -1, occ) |
-         ray_attacks(sq, -1, 1, occ) | ray_attacks(sq, -1, -1, occ);
-}
+  if (df == 0) {
+    step_file = 0;
+    step_rank = (dr > 0) ? 1 : -1;
+  } else if (dr == 0) {
+    step_rank = 0;
+    step_file = (df > 0) ? 1 : -1;
+  } else if (std::abs(df) == std::abs(dr)) {
+    step_file = (df > 0) ? 1 : -1;
+    step_rank = (dr > 0) ? 1 : -1;
+  } else {
+    return 0ULL;
+  }
 
-Bitboard rook_attacks(Square sq, Bitboard occ) {
-  return ray_attacks(sq, 1, 0, occ) | ray_attacks(sq, -1, 0, occ) |
-         ray_attacks(sq, 0, 1, occ) | ray_attacks(sq, 0, -1, occ);
+  int file = file_a + step_file;
+  int rank = rank_a + step_rank;
+  while (file != file_b || rank != rank_b) {
+    mask |= bit(static_cast<Square>(rank * 8 + file));
+    file += step_file;
+    rank += step_rank;
+  }
+
+  mask &= ~bit(a);
+  mask &= ~bit(b);
+  return mask;
 }
 
 struct ZobristTables {
@@ -178,9 +153,15 @@ bool is_digit(char c) {
   return c >= '0' && c <= '9';
 }
 
+void ensure_attacks_ready() {
+  static std::once_flag flag;
+  std::call_once(flag, [] { init_attacks(false); });
+}
+
 }  // namespace
 
 Position::Position() {
+  ensure_attacks_ready();
   clear();
 }
 
@@ -198,6 +179,10 @@ void Position::clear() {
   halfmove_clock_ = 0;
   fullmove_number_ = 1;
   zobrist_ = 0ULL;
+}
+
+Bitboard Position::pieces(Color color, PieceType type) const {
+  return pieces_[color_index(color)][static_cast<int>(type)];
 }
 
 Position Position::from_fen(std::string_view fen, bool strict) {
@@ -364,6 +349,34 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
   MoveList pseudo;
   generate_pseudo_legal(pseudo);
   out.clear();
+
+  const Color us = side_;
+  const Color them = flip(us);
+  std::array<Bitboard, 64> pin_masks{};
+  const Bitboard pinned = pinned_mask(us, pin_masks);
+  Bitboard checkers;
+  const bool double_check = in_double_check(us, checkers);
+  const bool in_check_now = checkers != 0ULL;
+  const Square king_sq = kings_[color_index(us)];
+
+  Bitboard capture_block = ~0ULL;
+  if (in_check_now) {
+    if (double_check) {
+      capture_block = 0ULL;
+    } else {
+      const Square checker_sq = static_cast<Square>(__builtin_ctzll(checkers));
+      capture_block = bit(checker_sq);
+      const Piece checker_piece = piece_on(checker_sq);
+      const PieceType checker_type = type_of(checker_piece);
+      if (checker_type == PieceType::Bishop || checker_type == PieceType::Rook ||
+          checker_type == PieceType::Queen) {
+        capture_block |= between_squares(king_sq, checker_sq);
+      }
+    }
+  }
+
+  const Bitboard enemy_attacks = attacked_squares(them);
+
   for (const Move move : pseudo) {
     const MoveFlag flag = move_flag(move);
     const bool is_capture = flag == MoveFlag::Capture ||
@@ -380,15 +393,69 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
     if (stage == GenStage::Quiets && !is_quiet) {
       continue;
     }
-    Undo u;
-    const_cast<Position*>(this)->make(move, u);
-    const bool legal = !const_cast<Position*>(this)->in_check(flip(side_));
-    const_cast<Position*>(this)->unmake(move, u);
-    if (legal) {
-      out.push_back(move);
-      if (trace_moves && sample_count < samples.size()) {
-        samples[sample_count++] = move;
+
+    const Square from = from_square(move);
+    const Square to = to_square(move);
+    const Piece moving_piece = piece_on(from);
+    const PieceType moving_type = type_of(moving_piece);
+    const Bitboard from_mask = bit(from);
+    const Bitboard to_mask = bit(to);
+
+    bool needs_validation = false;
+
+    if (moving_type == PieceType::King) {
+      needs_validation = true;
+      if (flag == MoveFlag::KingCastle) {
+        const Square mid = static_cast<Square>(static_cast<int>(king_sq) + 1);
+        const Square dest = static_cast<Square>(static_cast<int>(king_sq) + 2);
+        if (enemy_attacks & (bit(mid) | bit(dest))) {
+          continue;
+        }
+      } else if (flag == MoveFlag::QueenCastle) {
+        const Square mid = static_cast<Square>(static_cast<int>(king_sq) - 1);
+        const Square dest = static_cast<Square>(static_cast<int>(king_sq) - 2);
+        if (enemy_attacks & (bit(mid) | bit(dest))) {
+          continue;
+        }
+      } else if (enemy_attacks & to_mask) {
+        continue;
       }
+    } else {
+      if (double_check) {
+        continue;
+      }
+      if (in_check_now) {
+        if (flag == MoveFlag::EnPassant) {
+          needs_validation = true;
+        } else if (!(capture_block & to_mask)) {
+          continue;
+        }
+      }
+      if (pinned & from_mask) {
+        if (!(pin_masks[static_cast<int>(from)] & to_mask)) {
+          continue;
+        }
+      }
+    }
+
+    if (flag == MoveFlag::EnPassant) {
+      needs_validation = true;
+    }
+
+    if (needs_validation) {
+      auto& mutable_self = const_cast<Position&>(*this);
+      Undo u;
+      mutable_self.make(move, u);
+      const bool still_in_check = mutable_self.in_check(us);
+      mutable_self.unmake(move, u);
+      if (still_in_check) {
+        continue;
+      }
+    }
+
+    out.push_back(move);
+    if (trace_moves && sample_count < samples.size()) {
+      samples[sample_count++] = move;
     }
   }
 
@@ -422,6 +489,7 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
     trace_emit(TraceTopic::Moves, oss.str());
   }
 }
+
 
 bool Position::is_legal(Move m) const {
   Undo u;
@@ -670,23 +738,14 @@ void Position::recompute_zobrist() {
 }
 
 bool Position::is_square_attacked(Square sq, Color by) const {
-  const Bitboard target = bit(sq);
   const int attacker = color_index(by);
 
   const Bitboard pawns = pieces_[attacker][static_cast<int>(PieceType::Pawn)];
-  if (by == Color::White) {
-    Bitboard attacks = north_west(pawns) | north_east(pawns);
-    if (attacks & target) {
-      return true;
-    }
-  } else {
-    Bitboard attacks = south_west(pawns) | south_east(pawns);
-    if (attacks & target) {
-      return true;
-    }
+  if (pawn_attacks(flip(by), sq) & pawns) {
+    return true;
   }
 
-  if (kKnightAttacks[static_cast<int>(sq)] &
+  if (knight_attacks(sq) &
       pieces_[attacker][static_cast<int>(PieceType::Knight)]) {
     return true;
   }
@@ -705,7 +764,7 @@ bool Position::is_square_attacked(Square sq, Color by) const {
     return true;
   }
 
-  if (kKingAttacks[static_cast<int>(sq)] &
+  if (king_attacks(sq) &
       pieces_[attacker][static_cast<int>(PieceType::King)]) {
     return true;
   }
@@ -907,7 +966,7 @@ void Position::generate_pseudo_legal(MoveList& out) const {
     const int from_idx = __builtin_ctzll(knights);
     knights &= knights - 1;
     const Square from = static_cast<Square>(from_idx);
-    Bitboard moves = kKnightAttacks[from_idx] & ~ours;
+    Bitboard moves = knight_attacks(from) & ~ours;
     while (moves) {
       const int to_idx = __builtin_ctzll(moves);
       moves &= moves - 1;
@@ -946,7 +1005,7 @@ void Position::generate_pseudo_legal(MoveList& out) const {
   if (king_bb) {
     const int from_idx = __builtin_ctzll(king_bb);
     const Square from = static_cast<Square>(from_idx);
-    Bitboard moves = kKingAttacks[from_idx] & ~ours;
+    Bitboard moves = king_attacks(from) & ~ours;
     while (moves) {
       const int to_idx = __builtin_ctzll(moves);
       moves &= moves - 1;
@@ -990,6 +1049,147 @@ void Position::generate_pseudo_legal(MoveList& out) const {
       }
     }
   }
+}
+
+Bitboard Position::pinned_mask(Color us, std::array<Bitboard, 64>& pin_masks) const {
+  pin_masks.fill(0ULL);
+  Bitboard pinned = 0ULL;
+  const Color them = flip(us);
+  const Square king_sq = kings_[color_index(us)];
+  const int king_file = static_cast<int>(file_of(king_sq));
+  const int king_rank = static_cast<int>(rank_of(king_sq));
+
+  const Bitboard enemy_rooks = pieces_[color_index(them)][static_cast<int>(PieceType::Rook)] |
+                               pieces_[color_index(them)][static_cast<int>(PieceType::Queen)];
+  const Bitboard enemy_bishops = pieces_[color_index(them)][static_cast<int>(PieceType::Bishop)] |
+                                 pieces_[color_index(them)][static_cast<int>(PieceType::Queen)];
+
+  auto trace_direction = [&](int df, int dr, bool diagonal) {
+    int file = king_file + df;
+    int rank = king_rank + dr;
+    Square candidate = Square::None;
+    bool found_friend = false;
+    while (on_board(file, rank)) {
+      const Square sq = static_cast<Square>(rank * 8 + file);
+      const Piece pc = squares_[rank * 8 + file];
+      if (pc == Piece::None) {
+        file += df;
+        rank += dr;
+        continue;
+      }
+      if (color_of(pc) == us) {
+        if (found_friend) {
+          break;
+        }
+        found_friend = true;
+        candidate = sq;
+        file += df;
+        rank += dr;
+        continue;
+      }
+
+      const bool attacks = diagonal
+                               ? (enemy_bishops & bit(sq)) != 0ULL
+                               : (enemy_rooks & bit(sq)) != 0ULL;
+      if (attacks && found_friend) {
+        pinned |= bit(candidate);
+        pin_masks[static_cast<int>(candidate)] =
+            between_squares(king_sq, sq) | bit(sq) | bit(candidate);
+      }
+      break;
+    }
+  };
+
+  trace_direction(1, 0, false);
+  trace_direction(-1, 0, false);
+  trace_direction(0, 1, false);
+  trace_direction(0, -1, false);
+  trace_direction(1, 1, true);
+  trace_direction(1, -1, true);
+  trace_direction(-1, 1, true);
+  trace_direction(-1, -1, true);
+
+  return pinned;
+}
+
+Bitboard Position::attacked_squares(Color by) const {
+  Bitboard attacks = 0ULL;
+  const int idx = color_index(by);
+  const Bitboard occ = occupied_all_;
+
+  Bitboard pawns = pieces_[idx][static_cast<int>(PieceType::Pawn)];
+  while (pawns) {
+    const int sq_idx = __builtin_ctzll(pawns);
+    pawns &= pawns - 1;
+    const Square sq = static_cast<Square>(sq_idx);
+    attacks |= pawn_attacks(by, sq);
+  }
+
+  Bitboard knights = pieces_[idx][static_cast<int>(PieceType::Knight)];
+  while (knights) {
+    const int sq_idx = __builtin_ctzll(knights);
+    knights &= knights - 1;
+    const Square sq = static_cast<Square>(sq_idx);
+    attacks |= knight_attacks(sq);
+  }
+
+  Bitboard bishops = pieces_[idx][static_cast<int>(PieceType::Bishop)] |
+                     pieces_[idx][static_cast<int>(PieceType::Queen)];
+  while (bishops) {
+    const int sq_idx = __builtin_ctzll(bishops);
+    bishops &= bishops - 1;
+    const Square sq = static_cast<Square>(sq_idx);
+    attacks |= bishop_attacks(sq, occ);
+  }
+
+  Bitboard rooks = pieces_[idx][static_cast<int>(PieceType::Rook)] |
+                   pieces_[idx][static_cast<int>(PieceType::Queen)];
+  while (rooks) {
+    const int sq_idx = __builtin_ctzll(rooks);
+    rooks &= rooks - 1;
+    const Square sq = static_cast<Square>(sq_idx);
+    attacks |= rook_attacks(sq, occ);
+  }
+
+  const Square king_sq = kings_[idx];
+  if (king_sq != Square::None) {
+    attacks |= king_attacks(king_sq);
+  }
+
+  return attacks;
+}
+
+bool Position::in_double_check(Color side, Bitboard& checkers) const {
+  checkers = 0ULL;
+  const Color them = flip(side);
+  const Square king_sq = kings_[color_index(side)];
+  const Bitboard king_mask = bit(king_sq);
+
+  Bitboard pawn_sources = (them == Color::White)
+                              ? (south_west(king_mask) | south_east(king_mask))
+                              : (north_west(king_mask) | north_east(king_mask));
+  checkers |= pawn_sources & pieces_[color_index(them)][static_cast<int>(PieceType::Pawn)];
+
+  Bitboard knight_checks = knight_attacks(king_sq) &
+                           pieces_[color_index(them)][static_cast<int>(PieceType::Knight)];
+  checkers |= knight_checks;
+
+  Bitboard bishop_checks = bishop_attacks(king_sq, occupied_all_) &
+                           (pieces_[color_index(them)][static_cast<int>(PieceType::Bishop)] |
+                            pieces_[color_index(them)][static_cast<int>(PieceType::Queen)]);
+  checkers |= bishop_checks;
+
+  Bitboard rook_checks = rook_attacks(king_sq, occupied_all_) &
+                         (pieces_[color_index(them)][static_cast<int>(PieceType::Rook)] |
+                          pieces_[color_index(them)][static_cast<int>(PieceType::Queen)]);
+  checkers |= rook_checks;
+
+  const Square enemy_king = kings_[color_index(them)];
+  if (enemy_king != Square::None && (king_attacks(king_sq) & bit(enemy_king))) {
+    checkers |= bit(enemy_king);
+  }
+
+  return (checkers & (checkers - 1ULL)) != 0ULL;
 }
 
 std::string move_to_uci(Move move) {
