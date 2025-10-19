@@ -179,6 +179,23 @@ constexpr MoveFlag move_flag(Move m) {
   return static_cast<MoveFlag>((m.value >> 16) & 0xF);
 }
 
+namespace detail {
+inline constexpr std::uint16_t kSpecialMoveMask =
+    (1 << static_cast<int>(MoveFlag::Capture)) |
+    (1 << static_cast<int>(MoveFlag::EnPassant)) |
+    (1 << static_cast<int>(MoveFlag::Promotion)) |
+    (1 << static_cast<int>(MoveFlag::PromotionCapture));
+}  // namespace detail
+
+constexpr bool is_special(MoveFlag flag) {
+  return (detail::kSpecialMoveMask &
+          (1 << static_cast<int>(flag))) != 0;
+}
+
+constexpr bool is_quiet_like(MoveFlag flag) {
+  return flag == MoveFlag::Quiet || flag == MoveFlag::DoublePush;
+}
+
 class MoveList {
 public:
   MoveList();

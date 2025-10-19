@@ -34,6 +34,7 @@ public:
   [[nodiscard]] std::uint8_t castling_rights() const { return castling_; }
   [[nodiscard]] Square en_passant_square() const { return ep_square_; }
   [[nodiscard]] Bitboard pieces(Color color, PieceType type) const;
+  [[nodiscard]] bool is_sane(std::string* reason = nullptr) const;
 
   void generate_moves(MoveList& out, GenStage stage) const;
   bool is_legal(Move m) const;
@@ -49,12 +50,12 @@ private:
   void clear();
   void put_piece(Piece pc, Square sq);
   void remove_piece(Piece pc, Square sq);
-  void move_piece(Piece pc, Square from, Square to);
   void set_side_to_move(Color c);
   void set_castling(std::uint8_t rights);
   void set_en_passant(Square sq);
   void recompute_occupancy();
   void recompute_zobrist();
+  [[nodiscard]] std::uint64_t compute_zobrist() const;
   bool is_square_attacked(Square sq, Color by) const;
   void generate_pseudo_legal(MoveList& out) const;
   Bitboard pinned_mask(Color us, std::array<Bitboard, 64>& pin_masks) const;

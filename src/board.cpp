@@ -36,6 +36,15 @@ constexpr std::array<int, 8> kCastlingRookTargets = {5, 3, 5, 3};
 constexpr std::array<CastlingRights, 4> kCastlingRightsMask = {
     CastleWK, CastleWQ, CastleBK, CastleBQ};
 
+constexpr std::array<std::uint8_t, 64> kCastlingClear = [] {
+  std::array<std::uint8_t, 64> mask{};
+  mask[static_cast<int>(Square::A1)] = CastleWQ;
+  mask[static_cast<int>(Square::H1)] = CastleWK;
+  mask[static_cast<int>(Square::A8)] = CastleBQ;
+  mask[static_cast<int>(Square::H8)] = CastleBK;
+  return mask;
+}();
+
 constexpr std::array<int, 8> kCastleRightKingFile = {4, 4, 4, 4, 4, 4, 4, 4};
 
 constexpr std::array<std::uint8_t, 64> kSquareToFile = [] {
@@ -183,6 +192,83 @@ void Position::clear() {
 
 Bitboard Position::pieces(Color color, PieceType type) const {
   return pieces_[color_index(color)][static_cast<int>(type)];
+}
+
+bool Position::is_sane(std::string* reason) const {
+  const auto fail = [&](std::string_view msg) {
+    if (reason) {
+      reason->assign(msg);
+    }
+    return false;
+  };
+
+  bool white_king = false;
+  bool black_king = false;
+  Bitboard derived_occ[2] = {0ULL, 0ULL};
+  Bitboard derived_all = 0ULL;
+
+  for (int idx = 0; idx < 64; ++idx) {
+    const Square sq = static_cast<Square>(idx);
+    const Piece pc = squares_[idx];
+    if (pc == Piece::None) {
+      continue;
+    }
+    const Color c = color_of(pc);
+    const Bitboard mask = bit(sq);
+    derived_occ[color_index(c)] |= mask;
+    derived_all |= mask;
+    if (pc == Piece::WKing) {
+      white_king = true;
+    } else if (pc == Piece::BKing) {
+      black_king = true;
+    }
+  }
+
+  if (!white_king || !black_king) {
+    return fail(!white_king ? "white king missing" : "black king missing");
+  }
+
+  if (derived_occ[0] != occupied_[0]) {
+    return fail("occupancy mismatch for white");
+  }
+  if (derived_occ[1] != occupied_[1]) {
+    return fail("occupancy mismatch for black");
+  }
+  if (derived_all != occupied_all_) {
+    return fail("aggregate occupancy mismatch");
+  }
+
+  const Square white_king_sq = kings_[color_index(Color::White)];
+  const Square black_king_sq = kings_[color_index(Color::Black)];
+  if (white_king_sq == Square::None ||
+      squares_[static_cast<int>(white_king_sq)] != Piece::WKing) {
+    return fail("white king square mismatch");
+  }
+  if (black_king_sq == Square::None ||
+      squares_[static_cast<int>(black_king_sq)] != Piece::BKing) {
+    return fail("black king square mismatch");
+  }
+
+  if (compute_zobrist() != zobrist_) {
+    return fail("zobrist mismatch");
+  }
+
+  const Square ep = ep_square_;
+  if (ep != Square::None) {
+    const Rank ep_rank = rank_of(ep);
+    if (ep_rank != Rank::R3 && ep_rank != Rank::R6) {
+      return fail("invalid en passant rank");
+    }
+    const Color mover = (ep_rank == Rank::R3) ? Color::White : Color::Black;
+    const int dir = mover == Color::White ? 8 : -8;
+    const int pawn_idx = static_cast<int>(ep) + dir;
+    if (pawn_idx < 0 || pawn_idx >= 64 ||
+        squares_[pawn_idx] != make_piece(mover, PieceType::Pawn)) {
+      return fail("en passant pawn missing");
+    }
+  }
+
+  return true;
 }
 
 Position Position::from_fen(std::string_view fen, bool strict) {
@@ -505,6 +591,14 @@ void Position::make(Move m, Undo& undo) {
   Piece moving = squares_[static_cast<int>(from)];
   BBY_ASSERT(moving != Piece::None);
 
+  const auto& tables = zobrist_tables();
+  const auto apply_castling = [&](std::uint8_t new_castling) {
+    if (new_castling != castling_) {
+      zobrist_ ^= tables.castling[castling_];
+      castling_ = new_castling;
+      zobrist_ ^= tables.castling[castling_];
+    }
+  };
   undo.key = zobrist_;
   undo.move = m;
   undo.castling = castling_;
@@ -513,15 +607,79 @@ void Position::make(Move m, Undo& undo) {
   undo.captured = Piece::None;
 
   const MoveFlag flag = move_flag(m);
-
   set_en_passant(Square::None);
 
+  const PieceType origin_type = type_of(moving);
+  const bool is_quiet_move = flag == MoveFlag::Quiet;
+  const bool is_double_push =
+      (flag == MoveFlag::DoublePush && origin_type == PieceType::Pawn);
+  const bool quiet_like = is_quiet_move || is_double_push;
+  const int from_idx = static_cast<int>(from);
+  const int to_idx = static_cast<int>(to);
+  const Bitboard from_mask = bit(from);
+  const Bitboard to_mask = bit(to);
+  const int mover_idx = color_index(side_);
+  const int moving_type_idx = static_cast<int>(origin_type);
+  if (quiet_like && squares_[to_idx] == Piece::None) {
+    BBY_ASSERT(origin_type != PieceType::King || is_quiet_move);
+    const Bitboard shift_mask = from_mask | to_mask;
+    pieces_[mover_idx][moving_type_idx] ^= shift_mask;
+    occupied_[mover_idx] ^= shift_mask;
+    occupied_all_ ^= shift_mask;
+    zobrist_ ^= tables.piece[mover_idx][moving_type_idx][from_idx] ^
+                tables.piece[mover_idx][moving_type_idx][to_idx];
+
+    squares_[from_idx] = Piece::None;
+    squares_[to_idx] = moving;
+
+    halfmove_clock_ = (origin_type == PieceType::Pawn)
+                          ? 0
+                          : static_cast<std::uint8_t>(halfmove_clock_ + 1);
+
+    if (origin_type == PieceType::King) {
+      kings_[mover_idx] = to;
+    }
+
+    std::uint8_t new_castling = castling_;
+    new_castling &=
+        static_cast<std::uint8_t>(~kCastlingClear[from_idx]);
+    new_castling &=
+        static_cast<std::uint8_t>(~kCastlingClear[to_idx]);
+    if (origin_type == PieceType::King) {
+      if (side_ == Color::White) {
+        new_castling &= static_cast<std::uint8_t>(~(CastleWK | CastleWQ));
+      } else {
+        new_castling &= static_cast<std::uint8_t>(~(CastleBK | CastleBQ));
+      }
+    }
+    apply_castling(new_castling);
+
+    if (is_double_push) {
+      const int dir = (side_ == Color::White) ? 8 : -8;
+      const Square ep_target =
+          static_cast<Square>(static_cast<int>(from) + dir);
+      set_en_passant(ep_target);
+    }
+
+    if (side_ == Color::Black) {
+      ++fullmove_number_;
+    }
+
+    side_ = flip(side_);
+    zobrist_ ^= tables.side;
+
+    undo.captured = Piece::None;
+    return;
+  }
+
+  Square capture_sq = Square::None;
   if (flag == MoveFlag::EnPassant) {
     const int dir = (side_ == Color::White) ? -8 : 8;
-    const Square capture_sq = static_cast<Square>(static_cast<int>(to) + dir);
+    capture_sq = static_cast<Square>(static_cast<int>(to) + dir);
     undo.captured = squares_[static_cast<int>(capture_sq)];
     remove_piece(undo.captured, capture_sq);
   } else if (squares_[static_cast<int>(to)] != Piece::None) {
+    capture_sq = to;
     undo.captured = squares_[static_cast<int>(to)];
     remove_piece(undo.captured, to);
   }
@@ -554,32 +712,31 @@ void Position::make(Move m, Undo& undo) {
     set_en_passant(ep_target);
   }
 
-  if (type_of(moving) == PieceType::King) {
-    kings_[color_index(side_)] = to;
+  if (origin_type == PieceType::King) {
+    kings_[mover_idx] = to;
   }
 
-  auto clear_castling_rook = [&](Square sq) {
-    if (sq == Square::A1) castling_ &= ~CastleWQ;
-    if (sq == Square::H1) castling_ &= ~CastleWK;
-    if (sq == Square::A8) castling_ &= ~CastleBQ;
-    if (sq == Square::H8) castling_ &= ~CastleBK;
-  };
-
-  clear_castling_rook(from);
-  clear_castling_rook(to);
-  if (type_of(moving) == PieceType::King) {
+  std::uint8_t new_castling = castling_;
+  new_castling &= static_cast<std::uint8_t>(~kCastlingClear[from_idx]);
+  new_castling &= static_cast<std::uint8_t>(~kCastlingClear[to_idx]);
+  if (origin_type == PieceType::King) {
     if (side_ == Color::White) {
-      castling_ &= static_cast<std::uint8_t>(~(CastleWK | CastleWQ));
+      new_castling &= static_cast<std::uint8_t>(~(CastleWK | CastleWQ));
     } else {
-      castling_ &= static_cast<std::uint8_t>(~(CastleBK | CastleBQ));
+      new_castling &= static_cast<std::uint8_t>(~(CastleBK | CastleBQ));
     }
   }
 
   if (undo.captured != Piece::None && type_of(undo.captured) == PieceType::Rook) {
-    clear_castling_rook(to);
+    const Square affected =
+        capture_sq == Square::None ? to : capture_sq;
+    new_castling &=
+        static_cast<std::uint8_t>(
+            ~kCastlingClear[static_cast<int>(affected)]);
   }
+  apply_castling(new_castling);
 
-  halfmove_clock_ = (type_of(moving) == PieceType::Pawn || undo.captured != Piece::None)
+  halfmove_clock_ = (origin_type == PieceType::Pawn || undo.captured != Piece::None)
                         ? 0
                         : static_cast<std::uint8_t>(halfmove_clock_ + 1);
 
@@ -588,14 +745,8 @@ void Position::make(Move m, Undo& undo) {
   }
 
   side_ = flip(side_);
-  zobrist_ ^= zobrist_tables().side;
+  zobrist_ ^= tables.side;
 
-  const auto& tables = zobrist_tables();
-  // Castling key update.
-  if (undo.castling != castling_) {
-    zobrist_ ^= tables.castling[undo.castling];
-    zobrist_ ^= tables.castling[castling_];
-  }
   // En passant key update handled in set_en_passant.
 }
 
@@ -605,38 +756,65 @@ void Position::unmake(Move m, const Undo& undo) {
   Piece moving = squares_[static_cast<int>(to)];
   const MoveFlag flag = move_flag(m);
 
+  const int from_idx = static_cast<int>(from);
+  const int to_idx = static_cast<int>(to);
+  const Bitboard from_mask = bit(from);
+  const Bitboard to_mask = bit(to);
+
   side_ = flip(side_);
-  zobrist_ ^= zobrist_tables().side;
+  const auto& tables = zobrist_tables();
+  zobrist_ ^= tables.side;
 
-  if (flag == MoveFlag::KingCastle || flag == MoveFlag::QueenCastle) {
-    const bool king_side = flag == MoveFlag::KingCastle;
-    const int rook_target = king_side ? 5 : 3;
-    const int rook_file = king_side ? 7 : 0;
-    const Square rook_from =
-        static_cast<Square>(static_cast<int>(rank_of(to)) * 8 + rook_target);
-    const Square rook_to =
-        static_cast<Square>(static_cast<int>(rank_of(to)) * 8 + rook_file);
-    Piece rook = squares_[static_cast<int>(rook_from)];
-    remove_piece(rook, rook_from);
-    put_piece(rook, rook_to);
-  }
+  const int mover_idx = color_index(side_);
+  const PieceType moving_type = type_of(moving);
+  const int moving_type_idx = static_cast<int>(moving_type);
+  const bool quiet_like =
+      (flag == MoveFlag::Quiet || flag == MoveFlag::DoublePush);
 
-  remove_piece(moving, to);
-  if (flag == MoveFlag::Promotion || flag == MoveFlag::PromotionCapture) {
-    moving = make_piece(side_, PieceType::Pawn);
-  }
-  put_piece(moving, from);
+  const bool fast_path =
+      quiet_like && undo.captured == Piece::None &&
+      moving_type != PieceType::King;
 
-  if (flag == MoveFlag::EnPassant) {
-    const int dir = (side_ == Color::White) ? -8 : 8;
-    const Square capture_sq = static_cast<Square>(static_cast<int>(to) + dir);
-    put_piece(undo.captured, capture_sq);
-  } else if (undo.captured != Piece::None) {
-    put_piece(undo.captured, to);
-  }
+  if (fast_path) {
+    const Bitboard shift_mask = from_mask | to_mask;
+    pieces_[mover_idx][moving_type_idx] ^= shift_mask;
+    occupied_[mover_idx] ^= shift_mask;
+    occupied_all_ ^= shift_mask;
+    zobrist_ ^= tables.piece[mover_idx][moving_type_idx][to_idx] ^
+                tables.piece[mover_idx][moving_type_idx][from_idx];
+    squares_[to_idx] = Piece::None;
+    squares_[from_idx] = moving;
+  } else {
+    if (flag == MoveFlag::KingCastle || flag == MoveFlag::QueenCastle) {
+      const bool king_side = flag == MoveFlag::KingCastle;
+      const int rook_target = king_side ? 5 : 3;
+      const int rook_file = king_side ? 7 : 0;
+      const Square rook_from =
+          static_cast<Square>(static_cast<int>(rank_of(to)) * 8 + rook_target);
+      const Square rook_to =
+          static_cast<Square>(static_cast<int>(rank_of(to)) * 8 + rook_file);
+      Piece rook = squares_[static_cast<int>(rook_from)];
+      remove_piece(rook, rook_from);
+      put_piece(rook, rook_to);
+    }
 
-  if (type_of(moving) == PieceType::King) {
-    kings_[color_index(side_)] = from;
+    remove_piece(moving, to);
+    if (flag == MoveFlag::Promotion || flag == MoveFlag::PromotionCapture) {
+      moving = make_piece(side_, PieceType::Pawn);
+    }
+    put_piece(moving, from);
+
+    if (flag == MoveFlag::EnPassant) {
+      const int dir = (side_ == Color::White) ? -8 : 8;
+      const Square capture_sq = static_cast<Square>(static_cast<int>(to) + dir);
+      put_piece(undo.captured, capture_sq);
+    } else if (undo.captured != Piece::None) {
+      put_piece(undo.captured, to);
+    }
+
+    if (type_of(moving) == PieceType::King) {
+      kings_[color_index(side_)] = from;
+    }
   }
 
   castling_ = undo.castling;
@@ -720,7 +898,11 @@ void Position::recompute_occupancy() {
 }
 
 void Position::recompute_zobrist() {
-  zobrist_ = 0ULL;
+  zobrist_ = compute_zobrist();
+}
+
+std::uint64_t Position::compute_zobrist() const {
+  std::uint64_t value = 0ULL;
   const auto& tables = zobrist_tables();
   for (int sq = 0; sq < 64; ++sq) {
     const Piece pc = squares_[sq];
@@ -729,12 +911,16 @@ void Position::recompute_zobrist() {
     }
     const Color c = color_of(pc);
     const auto type = type_of(pc);
-    zobrist_ ^= tables.piece[color_index(c)][static_cast<int>(type)][sq];
+    value ^= tables.piece[color_index(c)][static_cast<int>(type)][sq];
   }
-  zobrist_ ^= tables.castling[castling_];
+  value ^= tables.castling[castling_];
   if (ep_square_ != Square::None) {
-    zobrist_ ^= tables.ep[static_cast<int>(file_of(ep_square_))];
+    value ^= tables.ep[static_cast<int>(file_of(ep_square_))];
   }
+  if (side_ == Color::Black) {
+    value ^= tables.side;
+  }
+  return value;
 }
 
 bool Position::is_square_attacked(Square sq, Color by) const {
