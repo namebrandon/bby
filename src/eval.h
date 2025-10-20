@@ -1,6 +1,7 @@
 #pragma once
-// eval.h -- Lightweight evaluation terms (PeSTO baseline) and tracing support.
-// Provides a stable API for the search to request tapered scores.
+/// @file eval.h
+/// @brief PeSTO-based tapered evaluation and optional tracing hooks.
+/// @details Produces deterministic midgame/endgame scores blended by phase.
 
 #include "board.h"
 
@@ -9,6 +10,8 @@ namespace bby {
 struct EvalTrace {
   Score midgame{0};
   Score endgame{0};
+  Score blended{0};
+  int phase{0};
 };
 
 Score evaluate(const Position& pos, EvalTrace* trace = nullptr);
