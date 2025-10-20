@@ -1,12 +1,28 @@
 #include "moveorder.h"
 
+#include <algorithm>
 #include <array>
+#include <utility>
+
+#include "common.h"
 
 namespace bby {
 
 namespace {
 
 constexpr std::array<int, 6> kPieceValues = {100, 320, 330, 500, 900, 10000};
+constexpr int kTTScore = 1'000'000;
+constexpr int kCaptureBase = 100'000;
+constexpr int kPromotionBase = 90'000;
+constexpr int kKillerPrimary = 80'000;
+constexpr int kKillerSecondary = 60'000;
+constexpr int kBadCapturePenalty = 40'000;
+constexpr int kHistoryScale = 2;
+
+struct ScoredMove {
+  Move move{};
+  int score{0};
+};
 
 int material(Piece pc) {
   const PieceType type = type_of(pc);
@@ -16,10 +32,110 @@ int material(Piece pc) {
   return kPieceValues[static_cast<int>(type)];
 }
 
+bool is_capture_like(MoveFlag flag) {
+  return flag == MoveFlag::Capture || flag == MoveFlag::PromotionCapture ||
+         flag == MoveFlag::EnPassant;
+}
+
+Piece capture_victim(const Position& pos, Move m) {
+  const Square to = to_square(m);
+  Piece victim = pos.piece_on(to);
+  if (move_flag(m) == MoveFlag::EnPassant) {
+    const int dir = pos.side_to_move() == Color::White ? -8 : 8;
+    const Square capture_sq = static_cast<Square>(static_cast<int>(to) + dir);
+    victim = pos.piece_on(capture_sq);
+  }
+  return victim;
+}
+
+int promotion_bonus(Move m) {
+  if (move_flag(m) != MoveFlag::Promotion &&
+      move_flag(m) != MoveFlag::PromotionCapture) {
+    return 0;
+  }
+  switch (promotion_type(m)) {
+    case PieceType::Queen:
+      return kPromotionBase + 8'000;
+    case PieceType::Rook:
+      return kPromotionBase + 5'000;
+    case PieceType::Bishop:
+      return kPromotionBase + 2'000;
+    case PieceType::Knight:
+      return kPromotionBase + 1'000;
+    default:
+      return kPromotionBase;
+  }
+}
+
+int history_score(const HistoryTable* history, const Position& pos, Move m) {
+  if (!history) {
+    return 0;
+  }
+  return history->get(pos.side_to_move(), m) * kHistoryScale;
+}
+
 }  // namespace
 
-void score_moves(MoveList& ml, const OrderingContext&) {
-  (void)ml;
+int HistoryTable::get(Color color, Move move) const {
+  const int from = static_cast<int>(from_square(move));
+  const int to = static_cast<int>(to_square(move));
+  const std::size_t idx =
+      static_cast<std::size_t>(color_index(color)) * kStride +
+      static_cast<std::size_t>(from) * 64 + static_cast<std::size_t>(to);
+  BBY_ASSERT(idx < values.size());
+  return values[idx];
+}
+
+void score_moves(MoveList& ml, const OrderingContext& ctx) {
+  BBY_ASSERT(ctx.pos != nullptr);
+  const Position& pos = *ctx.pos;
+  const std::size_t count = ml.size();
+
+  std::array<ScoredMove, kMaxMoves> scored{};
+  for (std::size_t idx = 0; idx < count; ++idx) {
+    const Move move = ml[idx];
+    int score = 0;
+
+    if (ctx.tt && ctx.tt->best_move == move) {
+      score += kTTScore;
+    }
+
+    const MoveFlag flag = move_flag(move);
+    if (is_capture_like(flag)) {
+      const Piece victim = capture_victim(pos, move);
+      const Piece attacker = pos.piece_on(from_square(move));
+      const int mvv_lva =
+          material(victim) * 16 - material(attacker);  // MVV-LVA emphasis
+      score += kCaptureBase + mvv_lva;
+      if (see(pos, move) < 0) {
+        score -= kBadCapturePenalty;
+      }
+    }
+
+    score += promotion_bonus(move);
+
+    if (move == ctx.killers[0]) {
+      score += kKillerPrimary;
+    } else if (move == ctx.killers[1]) {
+      score += kKillerSecondary;
+    } else if (!is_capture_like(flag)) {
+      score += history_score(ctx.history, pos, move);
+    }
+
+    scored[idx] = {move, score};
+  }
+
+  std::sort(scored.begin(), scored.begin() + static_cast<long>(count),
+            [](const ScoredMove& lhs, const ScoredMove& rhs) {
+              if (lhs.score == rhs.score) {
+                return lhs.move.value < rhs.move.value;
+              }
+              return lhs.score > rhs.score;
+            });
+
+  for (std::size_t idx = 0; idx < count; ++idx) {
+    ml[idx] = scored[idx].move;
+  }
 }
 
 int see(const Position& pos, Move m) {
@@ -27,16 +143,8 @@ int see(const Position& pos, Move m) {
     return 0;
   }
   const Square from = from_square(m);
-  const Square to = to_square(m);
   const Piece attacker = pos.piece_on(from);
-  Piece victim = pos.piece_on(to);
-
-  if (move_flag(m) == MoveFlag::EnPassant) {
-    const int dir = pos.side_to_move() == Color::White ? -8 : 8;
-    const Square capture_sq = static_cast<Square>(static_cast<int>(to) + dir);
-    victim = pos.piece_on(capture_sq);
-  }
-
+  const Piece victim = capture_victim(pos, m);
   const int gain = material(victim) - material(attacker);
   return gain;
 }
