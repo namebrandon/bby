@@ -282,7 +282,8 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   if (tt_hit) {
     ordering.tt = &tt_entry;
   }
-  score_moves(moves, ordering);
+  std::array<int, kMaxMoves> move_scores{};
+  score_moves(moves, ordering, move_scores);
 
   const bool singular_extension = tt_hit && should_extend_singular(pos, moves, tt_entry.best_move,
                                                                    depth, tt_entry, tables,
@@ -292,7 +293,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   Score best_score = -kEvalInfinity;
   PVLine child_pv{};
 
-  for (const Move move : moves) {
+  const std::size_t move_count = moves.size();
+  for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
+    select_best_move(moves, move_scores, move_index, move_count);
+    const Move move = moves[move_index];
     Undo undo;
     pos.make(move, undo);
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
@@ -408,9 +412,18 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
   if (static_cast<std::size_t>(ply) < state.killers.size()) {
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
   }
-  score_moves(moves, ordering);
+  std::array<int, kMaxMoves> move_scores{};
+  score_moves(moves, ordering, move_scores);
 
-  for (const Move move : moves) {
+  const std::size_t move_count = moves.size();
+  constexpr int kDeltaMargin = 150;
+  for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
+    select_best_move(moves, move_scores, move_index, move_count);
+    const Move move = moves[move_index];
+    const int margin = capture_margin(pos, move);
+    if (stand_pat + margin + kDeltaMargin < alpha) {
+      continue;
+    }
     if (see(pos, move) < 0) {
       continue;
     }

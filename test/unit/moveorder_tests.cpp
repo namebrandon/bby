@@ -1,5 +1,6 @@
 #include "moveorder.h"
 
+#include <array>
 #include <catch2/catch_test_macros.hpp>
 #include <string_view>
 
@@ -20,7 +21,8 @@ TEST_CASE("score_moves leaves legal move list intact", "[moveorder]") {
   pos.generate_moves(moves, GenStage::All);
   REQUIRE(moves.size() == 20);
   auto ctx = make_ctx(pos);
-  score_moves(moves, ctx);
+  std::array<int, kMaxMoves> scores{};
+  score_moves(moves, ctx, scores);
   REQUIRE(moves.size() == 20);
 }
 
@@ -44,7 +46,9 @@ TEST_CASE("score_moves prioritizes TT move", "[moveorder]") {
   OrderingContext ctx{};
   ctx.pos = &pos;
   ctx.tt = &tt_entry;
-  score_moves(moves, ctx);
+  std::array<int, kMaxMoves> scores{};
+  score_moves(moves, ctx, scores);
+  select_best_move(moves, scores, 0, moves.size());
   REQUIRE(moves[0] == tt_move);
 }
 
@@ -69,7 +73,9 @@ TEST_CASE("score_moves ranks higher value captures first", "[moveorder]") {
 
   OrderingContext ctx{};
   ctx.pos = &pos;
-  score_moves(moves, ctx);
+  std::array<int, kMaxMoves> scores{};
+  score_moves(moves, ctx, scores);
+  select_best_move(moves, scores, 0, moves.size());
   REQUIRE(moves[0] == best_capture);
 }
 
@@ -99,7 +105,9 @@ TEST_CASE("score_moves boosts killer and history moves", "[moveorder]") {
   ctx.history = &history;
   ctx.killers[0] = killer;
 
-  score_moves(moves, ctx);
+  std::array<int, kMaxMoves> scores{};
+  score_moves(moves, ctx, scores);
+  select_best_move(moves, scores, 0, moves.size());
   REQUIRE(moves[0] == killer);
 }
 

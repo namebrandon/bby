@@ -21,11 +21,6 @@ constexpr int kKillerSecondary = 60'000;
 constexpr int kBadCapturePenalty = 40'000;
 constexpr int kHistoryScale = 2;
 
-struct ScoredMove {
-  Move move{};
-  int score{0};
-};
-
 constexpr std::array<PieceType, 6> kSeeOrder = {
     PieceType::Pawn, PieceType::Knight, PieceType::Bishop,
     PieceType::Rook, PieceType::Queen, PieceType::King};
@@ -197,12 +192,11 @@ std::size_t HistoryTable::index(Color color, Move move) {
   return idx;
 }
 
-void score_moves(MoveList& ml, const OrderingContext& ctx) {
+void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores) {
   BBY_ASSERT(ctx.pos != nullptr);
   const Position& pos = *ctx.pos;
   const std::size_t count = ml.size();
 
-  std::array<ScoredMove, kMaxMoves> scored{};
   for (std::size_t idx = 0; idx < count; ++idx) {
     const Move move = ml[idx];
     int score = 0;
@@ -238,20 +232,27 @@ void score_moves(MoveList& ml, const OrderingContext& ctx) {
       score += history_score(ctx.history, pos, move);
     }
 
-    scored[idx] = {move, score};
+    scores[idx] = score;
   }
+}
 
-  std::sort(scored.begin(), scored.begin() + static_cast<long>(count),
-            [](const ScoredMove& lhs, const ScoredMove& rhs) {
-              if (lhs.score == rhs.score) {
-                return lhs.move.value < rhs.move.value;
-              }
-              return lhs.score > rhs.score;
-            });
-
-  for (std::size_t idx = 0; idx < count; ++idx) {
-    ml[idx] = scored[idx].move;
+void select_best_move(MoveList& ml, std::array<int, kMaxMoves>& scores, std::size_t start, std::size_t end) {
+  std::size_t best = start;
+  for (std::size_t idx = start + 1; idx < end; ++idx) {
+    if (scores[idx] > scores[best] ||
+        (scores[idx] == scores[best] && ml[idx].value < ml[best].value)) {
+      best = idx;
+    }
   }
+  if (best != start) {
+    std::swap(scores[start], scores[best]);
+    std::swap(ml[start], ml[best]);
+  }
+}
+
+int capture_margin(const Position& pos, Move m) {
+  const Piece victim = capture_victim(pos, m);
+  return material(victim) + promotion_delta(m);
 }
 
 int see(const Position& pos, Move m) {

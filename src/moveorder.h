@@ -28,7 +28,9 @@ struct OrderingContext {
   int ply{0};
 };
 
-void score_moves(MoveList& ml, const OrderingContext& ctx);
+void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores);
+void select_best_move(MoveList& ml, std::array<int, kMaxMoves>& scores, std::size_t start, std::size_t end);
 int see(const Position& pos, Move m);
+int capture_margin(const Position& pos, Move m);
 
 }  // namespace bby
