@@ -2,10 +2,11 @@
 
 #include <algorithm>
 #include <array>
-#include <limits>
+#include <bit>
 #include <utility>
 
 #include "common.h"
+#include "attacks.h"
 
 namespace bby {
 
@@ -24,6 +25,25 @@ struct ScoredMove {
   Move move{};
   int score{0};
 };
+
+constexpr std::array<PieceType, 6> kSeeOrder = {
+    PieceType::Pawn, PieceType::Knight, PieceType::Bishop,
+    PieceType::Rook, PieceType::Queen, PieceType::King};
+
+inline int piece_index(PieceType type) {
+  return static_cast<int>(type);
+}
+
+inline Bitboard bit_mask(Square sq) {
+  return bit(sq);
+}
+
+inline Square pop_lsb(Bitboard& bb) {
+  BBY_ASSERT(bb != 0ULL);
+  const int idx = static_cast<int>(std::countr_zero(bb));
+  bb &= bb - 1;
+  return static_cast<Square>(idx);
+}
 
 int material(Piece pc) {
   const PieceType type = type_of(pc);
@@ -84,31 +104,73 @@ int history_score(const HistoryTable* history, const Position& pos, Move m) {
   return history->get(pos.side_to_move(), m) * kHistoryScale;
 }
 
-int see_recursive(Position& pos, Square target) {
-  MoveList moves;
-  pos.generate_moves(moves, GenStage::Captures);
-  int best = std::numeric_limits<int>::min();
-  for (std::size_t idx = 0; idx < moves.size(); ++idx) {
-    const Move move = moves[idx];
-    if (to_square(move) != target) {
-      continue;
-    }
-    const Piece victim = capture_victim(pos, move);
-    const int gain = material(victim) + promotion_delta(move);
-    Undo undo;
-    pos.make(move, undo);
-    const int reply = see_recursive(pos, target);
-    pos.unmake(move, undo);
-    const int net = gain - reply;
-    if (net > best) {
-      best = net;
-    }
+struct AttackSet {
+  std::array<Bitboard, 6> by_type{};
+  Bitboard combined{0ULL};
+};
+
+using PieceTable = std::array<std::array<Bitboard, 6>, 2>;
+
+AttackSet collect_attackers(Color side, Square target, Bitboard occ,
+                            const PieceTable& pieces) {
+  AttackSet result{};
+  const int idx = color_index(side);
+
+  const Bitboard pawns = pieces[idx][piece_index(PieceType::Pawn)];
+  const Bitboard knights = pieces[idx][piece_index(PieceType::Knight)];
+  const Bitboard bishops = pieces[idx][piece_index(PieceType::Bishop)];
+  const Bitboard rooks = pieces[idx][piece_index(PieceType::Rook)];
+  const Bitboard queens = pieces[idx][piece_index(PieceType::Queen)];
+  const Bitboard kings = pieces[idx][piece_index(PieceType::King)];
+
+  const Bitboard diagonal = bishop_attacks(target, occ);
+  const Bitboard orthogonal = rook_attacks(target, occ);
+
+  result.by_type[piece_index(PieceType::Pawn)] =
+      pawn_attacks(flip(side), target) & pawns;
+  result.by_type[piece_index(PieceType::Knight)] =
+      knight_attacks(target) & knights;
+  result.by_type[piece_index(PieceType::Bishop)] =
+      diagonal & bishops;
+  result.by_type[piece_index(PieceType::Rook)] =
+      orthogonal & rooks;
+  result.by_type[piece_index(PieceType::Queen)] =
+      (diagonal | orthogonal) & queens;
+  result.by_type[piece_index(PieceType::King)] =
+      king_attacks(target) & kings;
+
+  for (const Bitboard bb : result.by_type) {
+    result.combined |= bb;
   }
-  if (best == std::numeric_limits<int>::min()) {
-    return 0;
-  }
-  return best;
+
+  return result;
 }
+
+struct SeeState {
+  PieceTable pieces{};
+  std::array<Bitboard, 2> occ_by_color{};
+  Bitboard occ{0ULL};
+
+  void remove_piece(Color color, PieceType type, Square sq) {
+    const Bitboard mask = bit_mask(sq);
+    const int idx = color_index(color);
+    occ_by_color[idx] &= ~mask;
+    occ &= ~mask;
+    if (type != PieceType::None) {
+      pieces[idx][piece_index(type)] &= ~mask;
+    }
+  }
+
+  void place_piece(Color color, PieceType type, Square sq) {
+    const Bitboard mask = bit_mask(sq);
+    const int idx = color_index(color);
+    occ_by_color[idx] |= mask;
+    occ |= mask;
+    if (type != PieceType::None) {
+      pieces[idx][piece_index(type)] |= mask;
+    }
+  }
+};
 
 }  // namespace
 
@@ -197,15 +259,90 @@ int see(const Position& pos, Move m) {
     return 0;
   }
 
-  const Piece victim = capture_victim(pos, m);
-  const int initial_gain = material(victim) + promotion_delta(m);
+  const Square from = from_square(m);
+  const Square to = to_square(m);
+  const Piece moving_piece = pos.piece_on(from);
+  const Color us = color_of(moving_piece);
+  const Color them = flip(us);
+  const PieceType moving_type = type_of(moving_piece);
+  const PieceType promotion = promotion_type(m);
+  const bool promoting = promotion != PieceType::None;
 
-  Position temp = pos;
-  Undo undo;
-  temp.make(m, undo);
-  const int reply = see_recursive(temp, to_square(m));
-  temp.unmake(m, undo);
-  return initial_gain - reply;
+  const Piece victim_piece =
+      (flag == MoveFlag::EnPassant)
+          ? make_piece(them, PieceType::Pawn)
+          : pos.piece_on(to);
+
+  const int initial_gain = material(victim_piece) + promotion_delta(m);
+  int depth = 0;
+  std::array<int, 32> gains{};
+  gains[depth] = initial_gain;
+
+  SeeState state{};
+  for (int color_idx = 0; color_idx < 2; ++color_idx) {
+    const Color color = color_idx == 0 ? Color::White : Color::Black;
+    state.occ_by_color[color_idx] = pos.occupancy(color);
+    for (int type_idx = 0; type_idx < 6; ++type_idx) {
+      state.pieces[color_idx][type_idx] =
+          pos.pieces(color, static_cast<PieceType>(type_idx));
+    }
+  }
+  state.occ = state.occ_by_color[0] | state.occ_by_color[1];
+
+  state.remove_piece(us, moving_type, from);
+  if (flag == MoveFlag::EnPassant) {
+    const int ep_dir = (us == Color::White) ? -8 : 8;
+    const auto ep_sq =
+        static_cast<Square>(static_cast<int>(to) + ep_dir);
+    state.remove_piece(them, PieceType::Pawn, ep_sq);
+  } else if (victim_piece != Piece::None) {
+    state.remove_piece(them, type_of(victim_piece), to);
+  }
+
+  PieceType current_type = promoting ? promotion : moving_type;
+  Color current_color = us;
+  state.place_piece(current_color, current_type, to);
+
+  Color side = them;
+  AttackSet attackers = collect_attackers(side, to, state.occ, state.pieces);
+
+  while (attackers.combined != 0ULL) {
+    PieceType attacker_type = PieceType::None;
+    Square attacker_sq = Square::None;
+
+    for (const PieceType candidate : kSeeOrder) {
+      Bitboard bb = attackers.by_type[piece_index(candidate)];
+      if (bb != 0ULL) {
+        attacker_sq = pop_lsb(bb);
+        attacker_type = candidate;
+        break;
+      }
+    }
+
+    if (attacker_type == PieceType::None) {
+      break;
+    }
+
+    ++depth;
+    gains[depth] =
+        kPieceValues[piece_index(current_type)] - gains[depth - 1];
+
+    state.remove_piece(current_color, current_type, to);
+    state.remove_piece(side, attacker_type, attacker_sq);
+
+    current_color = side;
+    current_type = attacker_type;
+    state.place_piece(current_color, current_type, to);
+
+    side = flip(side);
+    attackers = collect_attackers(side, to, state.occ, state.pieces);
+  }
+
+  for (int idx = depth; idx > 0; --idx) {
+    gains[idx - 1] = -std::max(-gains[idx - 1], gains[idx]);
+  }
+
+  return gains[0];
 }
 
 }  // namespace bby
