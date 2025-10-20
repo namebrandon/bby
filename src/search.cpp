@@ -13,6 +13,9 @@ namespace {
 
 constexpr std::size_t kDefaultTTMegabytes = 16;
 constexpr Score kEvalInfinity = 30000;
+constexpr Score kMateValue = kEvalInfinity - 512;
+constexpr Score mate_score(int ply) { return kMateValue - ply; }
+constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
 constexpr Score kSingularMargin = 50;
 
@@ -189,7 +192,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   MoveList moves;
   pos.generate_moves(moves, GenStage::All);
   if (moves.size() == 0) {
-    return evaluate(pos);
+    if (pos.in_check(pos.side_to_move())) {
+      return mated_score(ply);
+    }
+    return 0;
   }
 
   OrderingContext ordering{};
@@ -269,6 +275,32 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply) {
   state.nodes++;
+  const bool in_check = pos.in_check(pos.side_to_move());
+  if (in_check) {
+    MoveList evasions;
+    pos.generate_moves(evasions, GenStage::All);
+    if (evasions.size() == 0) {
+      return mated_score(ply);
+    }
+    Score best = -kEvalInfinity;
+    for (const Move move : evasions) {
+      Undo undo;
+      pos.make(move, undo);
+      const Score score = -qsearch(pos, -beta, -alpha, tables, state, ply + 1);
+      pos.unmake(move, undo);
+      if (score > best) {
+        best = score;
+      }
+      if (score > alpha) {
+        alpha = score;
+      }
+      if (alpha >= beta) {
+        break;
+      }
+    }
+    return best;
+  }
+
   const Score stand_pat = evaluate(pos);
   if (stand_pat >= beta) {
     return stand_pat;
