@@ -236,6 +236,8 @@ struct Undo {
   std::uint8_t castling{0};
   std::uint8_t halfmove_clock{0};
   Square en_passant{Square::None};
+  std::uint16_t fullmove_number{1};
+  bool null_move{false};
 };
 
 namespace detail {

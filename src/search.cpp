@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
@@ -18,6 +19,7 @@ constexpr Score kMateValue = kEvalInfinity - 512;
 constexpr Score mate_score(int ply) { return kMateValue - ply; }
 constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
+constexpr int kNullMoveReduction = 2;
 
 struct PVLine {
   std::array<Move, kMaxPly> moves{};
@@ -40,6 +42,29 @@ struct SearchState {
 };
 
 std::atomic<int> g_singular_margin{50};
+
+int count_non_pawn_material(const Position& pos, Color color) {
+  int total = 0;
+  for (PieceType type : {PieceType::Knight, PieceType::Bishop,
+                         PieceType::Rook, PieceType::Queen}) {
+    total += std::popcount(pos.pieces(color, type));
+  }
+  return total;
+}
+
+bool has_sufficient_material_for_null(const Position& pos) {
+  const Color side = pos.side_to_move();
+  const Color them = flip(side);
+  const int own = count_non_pawn_material(pos, side);
+  const int opp = count_non_pawn_material(pos, them);
+  if (own == 0) {
+    return false;
+  }
+  if (own + opp <= 1) {
+    return false;
+  }
+  return true;
+}
 
 bool is_quiet_move(Move move) {
   const MoveFlag flag = move_flag(move);
@@ -118,11 +143,15 @@ void set_pv(PVLine& dst, Move move, const PVLine& child) {
 Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply);
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
-              SearchState& state, int ply, PVLine& pv);
+              SearchState& state, int ply, PVLine& pv, bool previous_null);
 
 bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
                             int depth, const TTEntry& tt_entry,
-                            SearchTables& tables, SearchState& state, int ply) {
+                            SearchTables& tables, SearchState& state, int ply,
+                            bool previous_null) {
+  if (previous_null) {
+    return false;
+  }
   if (tt_move.is_null()) {
     return false;
   }
@@ -133,6 +162,9 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
     return false;
   }
   const int margin = g_singular_margin.load(std::memory_order_relaxed);
+  if (margin <= 0) {
+    return false;
+  }
   if (margin <= 0) {
     return false;
   }
@@ -155,7 +187,7 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
     Undo undo;
     pos.make(move, undo);
     const Score score =
-        -negamax(pos, reduced_depth, -singular_beta, -singular_alpha, tables, state, ply + 1, dummy);
+        -negamax(pos, reduced_depth, -singular_beta, -singular_alpha, tables, state, ply + 1, dummy, previous_null);
     pos.unmake(move, undo);
     if (score >= singular_beta) {
       state.history = history_snapshot;
@@ -169,7 +201,7 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
 }
 
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
-              SearchState& state, int ply, PVLine& pv) {
+              SearchState& state, int ply, PVLine& pv, bool previous_null) {
   state.nodes++;
   if (state.node_cap >= 0 && state.nodes > state.node_cap) {
     state.aborted = true;
@@ -201,10 +233,29 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     return qsearch(pos, alpha, beta, tables, state, ply);
   }
 
+  const bool in_check = pos.in_check(pos.side_to_move());
+
+  if (!in_check && !previous_null && depth >= kNullMoveReduction + 1 &&
+      has_sufficient_material_for_null(pos)) {
+    Undo null_undo;
+    pos.make_null(null_undo);
+    PVLine null_pv{};
+    const Score null_score = -negamax(pos, depth - 1 - kNullMoveReduction,
+                                      -beta, -beta + 1, tables, state, ply + 1,
+                                      null_pv, true);
+    pos.unmake_null(null_undo);
+    if (state.aborted) {
+      return beta;
+    }
+    if (null_score >= beta) {
+      return null_score;
+    }
+  }
+
   MoveList moves;
   pos.generate_moves(moves, GenStage::All);
   if (moves.size() == 0) {
-    if (pos.in_check(pos.side_to_move())) {
+    if (in_check) {
       return mated_score(ply);
     }
     return 0;
@@ -224,7 +275,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
   const bool singular_extension = tt_hit && should_extend_singular(pos, moves, tt_entry.best_move,
                                                                    depth, tt_entry, tables,
-                                                                   state, ply);
+                                                                   state, ply, previous_null);
 
   Move best_move{};
   Score best_score = -kEvalInfinity;
@@ -235,7 +286,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     pos.make(move, undo);
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
-    const Score score = -negamax(pos, next_depth, -beta, -alpha, tables, state, ply + 1, child_pv);
+    const Score score = -negamax(pos, next_depth, -beta, -alpha, tables, state, ply + 1, child_pv, false);
     pos.unmake(move, undo);
 
     if (score > best_score) {
@@ -399,7 +450,7 @@ SearchResult search(Position& root, const Limits& limits) {
     result.depth = current_depth;
     iteration_pv = PVLine{};
     const Score score = negamax(root, current_depth, -kEvalInfinity, kEvalInfinity,
-                                tables, state, 0, iteration_pv);
+                                tables, state, 0, iteration_pv, false);
     result.eval = score;
     result.nodes = state.nodes;
     if (state.aborted) {

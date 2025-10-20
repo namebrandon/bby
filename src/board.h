@@ -43,6 +43,8 @@ public:
 
   void make(Move m, Undo& undo);
   void unmake(Move m, const Undo& undo);
+  void make_null(Undo& undo);
+  void unmake_null(const Undo& undo);
 
   [[nodiscard]] Piece piece_on(Square sq) const { return squares_[static_cast<int>(sq)]; }
   [[nodiscard]] std::uint8_t halfmove_clock() const { return halfmove_clock_; }

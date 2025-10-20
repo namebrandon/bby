@@ -727,6 +727,7 @@ void Position::make(Move m, Undo& undo) {
     BBY_INVARIANT(compute_zobrist() == zobrist_);
   }
 #endif
+  undo.null_move = false;
   const Square from = from_square(m);
   const Square to = to_square(m);
   Piece moving = squares_[static_cast<int>(from)];
@@ -745,6 +746,7 @@ void Position::make(Move m, Undo& undo) {
   undo.castling = castling_;
   undo.en_passant = ep_square_;
   undo.halfmove_clock = halfmove_clock_;
+  undo.fullmove_number = fullmove_number_;
   undo.captured = Piece::None;
 
   const MoveFlag flag = move_flag(m);
@@ -965,6 +967,46 @@ void Position::unmake(Move m, const Undo& undo) {
     --fullmove_number_;
   }
 
+  zobrist_ = undo.key;
+}
+
+void Position::make_null(Undo& undo) {
+#if !defined(NDEBUG)
+  static thread_local std::uint32_t s_debug_counter = 0;
+  if ((++s_debug_counter & 0x3FFU) == 0U) {
+    BBY_INVARIANT(is_sane());
+    BBY_INVARIANT(compute_zobrist() == zobrist_);
+  }
+#endif
+  undo.key = zobrist_;
+  undo.move = Move{};
+  undo.captured = Piece::None;
+  undo.castling = castling_;
+  undo.halfmove_clock = halfmove_clock_;
+  undo.en_passant = ep_square_;
+  undo.fullmove_number = fullmove_number_;
+  undo.null_move = true;
+
+  set_en_passant(Square::None);
+  halfmove_clock_ = static_cast<std::uint8_t>(halfmove_clock_ + 1);
+
+  if (side_ == Color::Black) {
+    ++fullmove_number_;
+  }
+
+  side_ = flip(side_);
+  zobrist_ ^= zobrist_tables().side;
+}
+
+void Position::unmake_null(const Undo& undo) {
+  side_ = flip(side_);
+  if (side_ == Color::Black) {
+    --fullmove_number_;
+  }
+  castling_ = undo.castling;
+  set_en_passant(undo.en_passant);
+  halfmove_clock_ = undo.halfmove_clock;
+  fullmove_number_ = undo.fullmove_number;
   zobrist_ = undo.key;
 }
 
