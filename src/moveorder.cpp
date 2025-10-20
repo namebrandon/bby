@@ -215,10 +215,15 @@ void score_moves(MoveList& ml, const OrderingContext& ctx) {
     if (is_capture_like(flag)) {
       const Piece victim = capture_victim(pos, move);
       const Piece attacker = pos.piece_on(from_square(move));
+      const int victim_value = material(victim);
+      const int attacker_value = material(attacker);
       const int mvv_lva =
-          material(victim) * 16 - material(attacker);  // MVV-LVA emphasis
+          victim_value * 16 - attacker_value;  // MVV-LVA emphasis
       score += kCaptureBase + mvv_lva;
-      if (see(pos, move) < 0) {
+      const bool needs_see =
+          promotion_type(move) != PieceType::None || flag == MoveFlag::EnPassant ||
+          attacker_value >= victim_value;
+      if (needs_see && see(pos, move) < 0) {
         score -= kBadCapturePenalty;
       }
     }
