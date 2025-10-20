@@ -155,7 +155,18 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
   if (tt_move.is_null()) {
     return false;
   }
-  if (depth < 2) {
+  if (depth < 3) {
+    return false;
+  }
+  if (moves.size() <= 1) {
+    return false;
+  }
+  constexpr std::size_t kMaxSingularWidth = 24;
+  if (moves.size() > kMaxSingularWidth) {
+    return false;
+  }
+  const MoveFlag tt_flag = move_flag(tt_move);
+  if ((tt_flag == MoveFlag::Quiet || tt_flag == MoveFlag::DoublePush) && depth < 5) {
     return false;
   }
   if (tt_entry.bound != BoundType::Lower) {
