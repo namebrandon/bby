@@ -117,4 +117,16 @@ TEST_CASE("SEE identifies losing queen grab", "[moveorder]") {
   REQUIRE(see(pos, capture) < 0);
 }
 
+TEST_CASE("SEE handles en passant captures", "[moveorder]") {
+  Position pos = Position::from_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1", true);
+  Move ep = make_move(Square::E5, Square::D6, MoveFlag::EnPassant);
+  REQUIRE(see(pos, ep) > 0);
+}
+
+TEST_CASE("SEE rewards promotion captures", "[moveorder]") {
+  Position pos = Position::from_fen("4k2r/6P1/8/8/8/8/8/4K3 w - - 0 1", true);
+  Move promo = make_move(Square::G7, Square::H8, MoveFlag::PromotionCapture, PieceType::Queen);
+  REQUIRE(see(pos, promo) > 0);
+}
+
 }  // namespace bby::test
