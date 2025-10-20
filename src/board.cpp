@@ -14,6 +14,10 @@
 #include <tuple>
 #include <vector>
 
+#if defined(__SSE2__)
+#include <immintrin.h>
+#endif
+
 namespace bby {
 namespace {
 
@@ -78,6 +82,40 @@ constexpr bool on_board(int file, int rank) {
   return file >= 0 && file < 8 && rank >= 0 && rank < 8;
 }
 
+#if defined(__SSE2__)
+inline __m128i load_bb(Bitboard bb) {
+  return _mm_cvtsi64_si128(static_cast<long long>(bb));
+}
+
+inline Bitboard store_bb(__m128i vec) {
+  return static_cast<Bitboard>(_mm_cvtsi128_si64(vec));
+}
+#endif
+
+inline Bitboard pawn_single_pushes(Color side, Bitboard pawns, Bitboard empty) {
+#if defined(__SSE2__)
+  __m128i pawn_vec = load_bb(pawns);
+  __m128i empty_vec = load_bb(empty);
+  __m128i shifted =
+      side == Color::White ? _mm_slli_epi64(pawn_vec, 8) : _mm_srli_epi64(pawn_vec, 8);
+  __m128i res = _mm_and_si128(shifted, empty_vec);
+  return store_bb(res);
+#else
+  return side == Color::White ? (north(pawns) & empty) : (south(pawns) & empty);
+#endif
+}
+
+inline Bitboard pawn_double_pushes(Color side, Bitboard pawns, Bitboard empty) {
+  if (pawns == 0ULL) {
+    return 0ULL;
+  }
+  const Bitboard first = pawn_single_pushes(side, pawns, empty);
+  if (first == 0ULL) {
+    return 0ULL;
+  }
+  return pawn_single_pushes(side, first, empty);
+}
+
 Bitboard between_squares(Square a, Square b) {
   Bitboard mask = 0ULL;
   const int file_a = static_cast<int>(file_of(a));
@@ -119,6 +157,40 @@ Bitboard between_squares(Square a, Square b) {
   mask &= ~bit(a);
   mask &= ~bit(b);
   return mask;
+}
+
+inline bool slider_attacks_square(Bitboard occ, Square target, Bitboard bishop_sliders,
+                                  Bitboard rook_sliders) {
+  const int file = static_cast<int>(file_of(target));
+  const int rank = static_cast<int>(rank_of(target));
+
+  const auto scan = [&](int df, int dr, Bitboard sliders) -> bool {
+    int f = file + df;
+    int r = rank + dr;
+    while (on_board(f, r)) {
+      const Square sq = static_cast<Square>(r * 8 + f);
+      const Bitboard sq_bit = bit(sq);
+      if (occ & sq_bit) {
+        if (sliders & sq_bit) {
+          return true;
+        }
+        break;
+      }
+      f += df;
+      r += dr;
+    }
+    return false;
+  };
+
+  if (scan(1, 1, bishop_sliders) || scan(1, -1, bishop_sliders) ||
+      scan(-1, 1, bishop_sliders) || scan(-1, -1, bishop_sliders)) {
+    return true;
+  }
+  if (scan(1, 0, rook_sliders) || scan(-1, 0, rook_sliders) ||
+      scan(0, 1, rook_sliders) || scan(0, -1, rook_sliders)) {
+    return true;
+  }
+  return false;
 }
 
 struct ZobristTables {
@@ -445,6 +517,36 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
   const bool in_check_now = checkers != 0ULL;
   const Square king_sq = kings_[color_index(us)];
 
+  Bitboard enemy_pawn_attacks = 0ULL;
+  Bitboard pawns = pieces_[color_index(them)][static_cast<int>(PieceType::Pawn)];
+  while (pawns) {
+    const int sq_idx = __builtin_ctzll(pawns);
+    pawns &= pawns - 1;
+    const Square sq = static_cast<Square>(sq_idx);
+    enemy_pawn_attacks |= pawn_attacks(them, sq);
+  }
+
+  Bitboard enemy_knight_attacks = 0ULL;
+  Bitboard knights = pieces_[color_index(them)][static_cast<int>(PieceType::Knight)];
+  while (knights) {
+    const int sq_idx = __builtin_ctzll(knights);
+    knights &= knights - 1;
+    enemy_knight_attacks |= knight_attacks(static_cast<Square>(sq_idx));
+  }
+
+  Bitboard enemy_king_attacks = 0ULL;
+  const Square enemy_king_sq = kings_[color_index(them)];
+  if (enemy_king_sq != Square::None) {
+    enemy_king_attacks = king_attacks(enemy_king_sq);
+  }
+
+  const Bitboard enemy_bishop_sliders =
+      pieces_[color_index(them)][static_cast<int>(PieceType::Bishop)] |
+      pieces_[color_index(them)][static_cast<int>(PieceType::Queen)];
+  const Bitboard enemy_rook_sliders =
+      pieces_[color_index(them)][static_cast<int>(PieceType::Rook)] |
+      pieces_[color_index(them)][static_cast<int>(PieceType::Queen)];
+
   Bitboard capture_block = ~0ULL;
   if (in_check_now) {
     if (double_check) {
@@ -460,8 +562,6 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
       }
     }
   }
-
-  const Bitboard enemy_attacks = attacked_squares(them);
 
   for (const Move move : pseudo) {
     const MoveFlag flag = move_flag(move);
@@ -490,21 +590,55 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
     bool needs_validation = false;
 
     if (moving_type == PieceType::King) {
-      needs_validation = true;
       if (flag == MoveFlag::KingCastle) {
+        needs_validation = true;
         const Square mid = static_cast<Square>(static_cast<int>(king_sq) + 1);
         const Square dest = static_cast<Square>(static_cast<int>(king_sq) + 2);
-        if (enemy_attacks & (bit(mid) | bit(dest))) {
+        const Bitboard check_mask = bit(mid) | bit(dest);
+        if ((enemy_pawn_attacks | enemy_knight_attacks | enemy_king_attacks) & check_mask) {
           continue;
         }
       } else if (flag == MoveFlag::QueenCastle) {
+        needs_validation = true;
         const Square mid = static_cast<Square>(static_cast<int>(king_sq) - 1);
         const Square dest = static_cast<Square>(static_cast<int>(king_sq) - 2);
-        if (enemy_attacks & (bit(mid) | bit(dest))) {
+        const Bitboard check_mask = bit(mid) | bit(dest);
+        if ((enemy_pawn_attacks | enemy_knight_attacks | enemy_king_attacks) & check_mask) {
           continue;
         }
-      } else if (enemy_attacks & to_mask) {
-        continue;
+      } else {
+        if (enemy_pawn_attacks & to_mask) {
+          continue;
+        }
+        if (enemy_knight_attacks & to_mask) {
+          continue;
+        }
+        if (enemy_king_attacks & to_mask) {
+          continue;
+        }
+
+        Bitboard occ = occupied_all_;
+        occ ^= from_mask;
+        Bitboard bishop_sliders = enemy_bishop_sliders;
+        Bitboard rook_sliders = enemy_rook_sliders;
+        if (is_capture) {
+          Piece captured_piece = piece_on(to);
+          if (captured_piece != Piece::None) {
+            const PieceType captured_type = type_of(captured_piece);
+            if (captured_type == PieceType::Bishop || captured_type == PieceType::Queen) {
+              bishop_sliders &= ~to_mask;
+            }
+            if (captured_type == PieceType::Rook || captured_type == PieceType::Queen) {
+              rook_sliders &= ~to_mask;
+            }
+            occ ^= to_mask;
+          }
+        }
+        occ |= to_mask;
+        if (slider_attacks_square(occ, to, bishop_sliders, rook_sliders)) {
+          continue;
+        }
+        needs_validation = false;
       }
     } else {
       if (double_check) {
@@ -586,6 +720,13 @@ bool Position::is_legal(Move m) const {
 }
 
 void Position::make(Move m, Undo& undo) {
+#if !defined(NDEBUG)
+  static thread_local std::uint32_t s_debug_counter = 0;
+  if ((++s_debug_counter & 0x3FFU) == 0U) {
+    BBY_INVARIANT(is_sane());
+    BBY_INVARIANT(compute_zobrist() == zobrist_);
+  }
+#endif
   const Square from = from_square(m);
   const Square to = to_square(m);
   Piece moving = squares_[static_cast<int>(from)];
@@ -974,7 +1115,7 @@ void Position::generate_pseudo_legal(MoveList& out) const {
 
   const Bitboard pawns = pieces_[us][static_cast<int>(PieceType::Pawn)];
   if (side_ == Color::White) {
-    Bitboard single = north(pawns) & empty;
+    Bitboard single = pawn_single_pushes(Color::White, pawns, empty);
     Bitboard promotions = single & kRank8;
     Bitboard quiets = single & ~kRank8;
     while (quiets) {
@@ -986,8 +1127,7 @@ void Position::generate_pseudo_legal(MoveList& out) const {
     }
 
     Bitboard start_rank = pawns & kRank2;
-    Bitboard single_from_start = north(start_rank) & empty;
-    Bitboard double_push = north(single_from_start) & empty;
+    Bitboard double_push = pawn_double_pushes(Color::White, start_rank, empty);
     while (double_push) {
       const int to_idx = __builtin_ctzll(double_push);
       double_push &= double_push - 1;
@@ -1060,7 +1200,7 @@ void Position::generate_pseudo_legal(MoveList& out) const {
       }
     }
   } else {
-    Bitboard single = south(pawns) & empty;
+    Bitboard single = pawn_single_pushes(Color::Black, pawns, empty);
     Bitboard promotions = single & kRank1;
     Bitboard quiets = single & ~kRank1;
     while (quiets) {
@@ -1072,8 +1212,7 @@ void Position::generate_pseudo_legal(MoveList& out) const {
     }
 
     Bitboard start_rank = pawns & kRank7;
-    Bitboard single_from_start = south(start_rank) & empty;
-    Bitboard double_push = south(single_from_start) & empty;
+    Bitboard double_push = pawn_double_pushes(Color::Black, start_rank, empty);
     while (double_push) {
       const int to_idx = __builtin_ctzll(double_push);
       double_push &= double_push - 1;

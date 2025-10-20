@@ -31,6 +31,7 @@ Utility targets:
 - `make perft` – build the perft oracle in `tools/`
 - `make sanitize-test` – build + run unit tests under ASan/UBSan
 - `make tsan-test` – build + run unit tests under TSan
+- `make perft-diff` – build `bby-perft` and compare depth-5 perft counts against Stockfish (see `tools/perft_compare.py`)
 - `make clean` – remove the `build/` tree only (preserves caches/packages)
 
 ### Sanitizer Workflows

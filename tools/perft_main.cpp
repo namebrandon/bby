@@ -1,4 +1,5 @@
-#include "epd/epd.h"
+#include "bbinit.h"
+#include "epd.h"
 #include "perft.h"
 
 #include <chrono>
@@ -40,6 +41,7 @@ Options parse(int argc, char** argv) {
 }  // namespace
 
 int main(int argc, char** argv) {
+  [[maybe_unused]] const auto init_state = bby::initialize();
   const Options options = parse(argc, argv);
   if (!options.suite_path.empty()) {
     std::ifstream suite(options.suite_path);
@@ -84,15 +86,24 @@ int main(int argc, char** argv) {
   }
 
   if (!options.epd_path.empty()) {
-    std::string error;
-    const auto records = bby::load_epd_file(options.epd_path, error);
-    if (!error.empty()) {
-      std::cerr << "EPD error: " << error << "\n";
-      return 1;
+    const auto load_result = bby::load_epd_file(options.epd_path);
+    for (const auto& err : load_result.errors) {
+      std::cerr << "EPD error";
+      if (err.line != 0) {
+        std::cerr << " line=" << err.line;
+      }
+      std::cerr << ": " << err.message;
+      if (!err.content.empty()) {
+        std::cerr << " source=\"" << err.content << "\"";
+      }
+      std::cerr << "\n";
+    }
+    if (load_result.records.empty()) {
+      return load_result.ok() ? 0 : 1;
     }
     std::uint64_t total_nodes = 0;
-    for (std::size_t idx = 0; idx < records.size(); ++idx) {
-      bby::Position pos = records[idx].position;
+    for (std::size_t idx = 0; idx < load_result.records.size(); ++idx) {
+      bby::Position pos = load_result.records[idx].position;
       const auto start = std::chrono::steady_clock::now();
       const std::uint64_t nodes = bby::perft(pos, options.depth);
       const auto end = std::chrono::steady_clock::now();
@@ -101,18 +112,19 @@ int main(int argc, char** argv) {
       total_nodes += nodes;
       std::cout << "line=" << (idx + 1) << " nodes=" << nodes << " time_ms=" << elapsed_ms
                 << " id=";
-      auto id_it = records[idx].operations.find("id");
-      if (id_it != records[idx].operations.end()) {
+      auto id_it = load_result.records[idx].operations.find("id");
+      if (id_it != load_result.records[idx].operations.end()) {
         std::cout << id_it->second;
       }
-      auto bm_it = records[idx].operations.find("bm");
-      if (bm_it != records[idx].operations.end()) {
+      auto bm_it = load_result.records[idx].operations.find("bm");
+      if (bm_it != load_result.records[idx].operations.end()) {
         std::cout << " bm=" << bm_it->second;
       }
       std::cout << "\n";
     }
-    std::cout << "summary nodes=" << total_nodes << " entries=" << records.size() << "\n";
-    return 0;
+    std::cout << "summary nodes=" << total_nodes << " entries=" << load_result.records.size()
+              << "\n";
+    return load_result.ok() ? 0 : 1;
   }
 
   bby::Position pos = bby::Position::from_fen(options.fen, false);

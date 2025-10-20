@@ -11,6 +11,7 @@ TEST_CASE("Perft start position small depths", "[perft]") {
   REQUIRE(perft(pos, 2) == 400ULL);
   REQUIRE(perft(pos, 3) == 8902ULL);
   REQUIRE(perft(pos, 4) == 197281ULL);
+  REQUIRE(perft(pos, 5) == 4865609ULL);
 }
 
 TEST_CASE("Perft reference suite matches expected counts", "[perft][reference]") {

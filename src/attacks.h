@@ -3,9 +3,10 @@
  * @file attacks.h
  * @brief Attack helpers for sliding and leaper pieces.
  *
- * The current implementation computes slider rays on the fly and caches
- * leaper attacks in simple lookup tables. `init_attacks` is kept as a hook so
- * future CPU-specific dispatch can drop in without disturbing call sites.
+ * Sliding attacks rely on BMI2 PEXT tables when the binary is compiled with
+ * BMI2 support; otherwise they use precomputed magic-bitboard lookup tables.
+ * The helper `init_attacks` validates configuration requests but does not
+ * retain any mutable global state.
  */
 
 #include "common.h"

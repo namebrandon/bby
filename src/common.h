@@ -77,8 +77,19 @@ constexpr Rank rank_of(Square sq) {
                             : static_cast<Rank>(static_cast<int>(sq) >> 3);
 }
 
+namespace detail {
+constexpr std::array<Bitboard, 65> kSquareBits = [] {
+  std::array<Bitboard, 65> arr{};
+  for (int idx = 0; idx < 64; ++idx) {
+    arr[idx] = 1ULL << idx;
+  }
+  arr[64] = 0ULL;
+  return arr;
+}();
+}  // namespace detail
+
 constexpr Bitboard bit(Square sq) {
-  return sq == Square::None ? 0ULL : (1ULL << static_cast<int>(sq));
+  return detail::kSquareBits[static_cast<int>(sq)];
 }
 
 std::string square_to_string(Square sq);
@@ -102,6 +113,18 @@ enum class Piece : std::uint8_t {
   BKing
 };
 
+namespace detail {
+constexpr std::array<Color, 13> kPieceColors = {
+    Color::White, Color::White, Color::White, Color::White, Color::White,
+    Color::White, Color::White, Color::Black, Color::Black, Color::Black,
+    Color::Black, Color::Black, Color::Black};
+constexpr std::array<PieceType, 13> kPieceTypes = {
+    PieceType::None,  PieceType::Pawn,   PieceType::Knight, PieceType::Bishop,
+    PieceType::Rook,  PieceType::Queen,  PieceType::King,   PieceType::Pawn,
+    PieceType::Knight, PieceType::Bishop, PieceType::Rook,  PieceType::Queen,
+    PieceType::King};
+}  // namespace detail
+
 enum class GenStage : std::uint8_t { Captures = 0, Quiets = 1, All = 2 };
 
 constexpr Piece make_piece(Color c, PieceType pt) {
@@ -114,20 +137,11 @@ constexpr Piece make_piece(Color c, PieceType pt) {
 }
 
 constexpr Color color_of(Piece pc) {
-  if (pc == Piece::None) {
-    return Color::White;
-  }
-  return static_cast<std::uint8_t>(pc) < static_cast<std::uint8_t>(Piece::BPawn)
-             ? Color::White
-             : Color::Black;
+  return detail::kPieceColors[static_cast<std::uint8_t>(pc)];
 }
 
 constexpr PieceType type_of(Piece pc) {
-  if (pc == Piece::None) {
-    return PieceType::None;
-  }
-  const auto raw = static_cast<std::uint8_t>(pc);
-  return static_cast<PieceType>((raw - 1) % 6);
+  return detail::kPieceTypes[static_cast<std::uint8_t>(pc)];
 }
 
 char piece_to_char(Piece pc);

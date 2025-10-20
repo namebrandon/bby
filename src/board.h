@@ -10,6 +10,8 @@
 
 namespace bby {
 
+struct LegalMoveContext;
+
 enum CastlingRights : std::uint8_t {
   CastleNone = 0,
   CastleWK = 1 << 0,
@@ -57,10 +59,13 @@ private:
   void recompute_zobrist();
   [[nodiscard]] std::uint64_t compute_zobrist() const;
   bool is_square_attacked(Square sq, Color by) const;
+  void generate_pseudo_legal_cb(void (*cb)(Move, void*), void* ctx) const;
   void generate_pseudo_legal(MoveList& out) const;
   Bitboard pinned_mask(Color us, std::array<Bitboard, 64>& pin_masks) const;
   Bitboard attacked_squares(Color by) const;
   bool in_double_check(Color side, Bitboard& checkers) const;
+  static bool square_attacked_cached(LegalMoveContext& ctx, Square sq);
+  static void legal_move_callback(Move move, void* ctx);
 
   std::array<Piece, 64> squares_{};
   std::array<std::array<Bitboard, 6>, 2> pieces_{{}};

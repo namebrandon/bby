@@ -12,8 +12,11 @@ struct InitOptions {
   std::uint64_t rng_seed{0x1234'5678'9abc'def0ULL};
 };
 
-void initialize(const InitOptions& opts = {});
-std::string cpu_feature_summary();
-const InitOptions& init_options();
+struct InitState {
+  InitOptions options{};
+};
+
+InitState initialize(const InitOptions& opts = {});
+std::string cpu_feature_summary(const InitState& state);
 
 }  // namespace bby

@@ -27,17 +27,24 @@
 namespace bby {
 namespace {
 
-std::mutex g_io_mutex;
-UciWriter g_output_writer = nullptr;
+struct UciIo {
+  std::mutex mutex;
+  UciWriter writer{nullptr};
+};
 
-void write_line(const std::string& text) {
-  std::lock_guard<std::mutex> lock(g_io_mutex);
-  if (const UciWriter writer = g_output_writer) {
+void write_line(UciIo& io, const std::string& text) {
+  std::lock_guard<std::mutex> lock(io.mutex);
+  if (const UciWriter writer = io.writer) {
     writer(text);
   } else {
     std::cout << text << '\n';
     std::cout.flush();
   }
+}
+
+UciWriter& thread_local_writer() {
+  thread_local UciWriter writer = nullptr;
+  return writer;
 }
 
 template <typename T, std::size_t Capacity>
@@ -80,13 +87,6 @@ constexpr std::string_view kEngineName = "Brilliant, But Why?";
 constexpr std::string_view kEngineAuthor = "BBY Team";
 constexpr std::string_view kStartPositionFen =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
-
-struct UciState {
-  Position pos = Position::from_fen(kStartPositionFen, false);
-  int threads{1};
-  int hash_mb{128};
-  bool debug{false};
-};
 
 std::string consume_token(std::string_view& view) {
   const auto first = view.find_first_not_of(' ');
@@ -215,6 +215,10 @@ class SearchWorker {
   SearchWorker() : thread_(&SearchWorker::run, this) {}
   ~SearchWorker() { shutdown(); }
 
+  void bind_io(UciIo* io) {
+    io_ = io;
+  }
+
   void start_search(const Position& pos, const Limits& limits) {
     busy_.store(true, std::memory_order_release);
     SearchCommand cmd;
@@ -299,10 +303,15 @@ class SearchWorker {
             has_snapshot_ = true;
           }
 
+          if (io_ == nullptr) {
+            BBY_ASSERT(false && "UCI I/O must be bound before search");
+            return;
+          }
+
           if (stopped) {
-            write_line("bestmove 0000");
+            write_line(*io_, "bestmove 0000");
           } else {
-            write_line("bestmove " + format_move(result.best));
+            write_line(*io_, "bestmove " + format_move(result.best));
           }
 
           busy_.store(false, std::memory_order_release);
@@ -328,36 +337,51 @@ class SearchWorker {
   mutable std::mutex snapshot_mutex_;
   SearchSnapshot last_snapshot_{};
   bool has_snapshot_{false};
+  UciIo* io_{nullptr};
 };
 
-SearchWorker g_worker;
+struct UciState {
+  mutable UciIo io{};
+  SearchWorker worker{};
+  Position pos{Position::from_fen(kStartPositionFen, false)};
+  int threads{1};
+  int hash_mb{128};
+  bool debug{false};
+  InitState init;
 
-void emit_id_block() {
-  write_line(std::string("id name ") + std::string(kEngineName));
-  write_line(std::string("id author ") + std::string(kEngineAuthor));
+  explicit UciState(const InitState& init_state)
+      : init(init_state) {
+    worker.bind_io(&io);
+    io.writer = thread_local_writer();
+  }
+};
+
+void emit_id_block(UciIo& io) {
+  write_line(io, std::string("id name ") + std::string(kEngineName));
+  write_line(io, std::string("id author ") + std::string(kEngineAuthor));
 }
 
 void emit_options(const UciState& state) {
-  write_line("option name Threads type spin default 1 min 1 max 512 value " +
-             std::to_string(state.threads));
-  write_line("option name Hash type spin default 128 min 1 max 8192 value " +
-             std::to_string(state.hash_mb));
+  write_line(state.io, "option name Threads type spin default 1 min 1 max 512 value " +
+                             std::to_string(state.threads));
+  write_line(state.io, "option name Hash type spin default 128 min 1 max 8192 value " +
+                             std::to_string(state.hash_mb));
 }
 
-void send_readyok() {
-  write_line("readyok");
+void send_readyok(UciIo& io) {
+  write_line(io, "readyok");
 }
 
-void send_info(const std::string& msg) {
-  write_line("info string " + msg);
+void send_info(UciIo& io, const std::string& msg) {
+  write_line(io, "info string " + msg);
 }
 
-void handle_register(std::string_view) {
-  send_info("registration not required");
+void handle_register(UciState& state, std::string_view) {
+  send_info(state.io, "registration not required");
 }
 
-void handle_ponderhit() {
-  send_info("ponderhit acknowledged (pondering not implemented)");
+void handle_ponderhit(UciState& state) {
+  send_info(state.io, "ponderhit acknowledged (pondering not implemented)");
 }
 
 void handle_position(UciState& state, std::string_view args) {
@@ -382,7 +406,7 @@ void handle_position(UciState& state, std::string_view args) {
       }
     }
     if (fen_fields.size() < 4) {
-      send_info("invalid FEN supplied to position command");
+      send_info(state.io, "invalid FEN supplied to position command");
       return;
     }
     std::string fen_string;
@@ -393,11 +417,11 @@ void handle_position(UciState& state, std::string_view args) {
     try {
       state.pos = Position::from_fen(fen_string, false);
     } catch (const std::exception& ex) {
-      send_info(std::string("FEN error: ") + ex.what());
+      send_info(state.io, std::string("FEN error: ") + ex.what());
       return;
     }
   } else {
-    send_info("unknown token after position: " + token);
+    send_info(state.io, "unknown token after position: " + token);
     return;
   }
 
@@ -413,7 +437,7 @@ void handle_position(UciState& state, std::string_view args) {
       }
       const Move mv = find_uci_move(state.pos, move_token);
       if (mv.is_null()) {
-        send_info("illegal move '" + move_token + "'");
+        send_info(state.io, "illegal move '" + move_token + "'");
         break;
       }
       Undo undo;
@@ -426,7 +450,7 @@ void handle_setoption(UciState& state, std::string_view args) {
   std::string_view view = args;
   std::string token = consume_token(view);  // expect "name"
   if (token != "name") {
-    send_info("setoption missing 'name'");
+    send_info(state.io, "setoption missing 'name'");
     return;
   }
   std::string name;
@@ -462,9 +486,9 @@ void handle_setoption(UciState& state, std::string_view args) {
       state.threads = static_cast<int>(std::clamp<std::int64_t>(*parsed, 1, 512));
     }
   } else if (name == "Debug Log File") {
-    send_info("debug log unsupported");
+    send_info(state.io, "debug log unsupported");
   } else {
-    send_info("ignored option '" + name + "'");
+    send_info(state.io, "ignored option '" + name + "'");
   }
 }
 
@@ -511,11 +535,11 @@ void handle_go(UciState& state, std::string_view args) {
     }
   }
 
-  if (g_worker.is_busy()) {
-    g_worker.request_stop();
-    g_worker.wait_idle();
+  if (state.worker.is_busy()) {
+    state.worker.request_stop();
+    state.worker.wait_idle();
   }
-  g_worker.start_search(state.pos, limits);
+  state.worker.start_search(state.pos, limits);
 }
 
 void handle_debug(UciState& state, std::string_view args) {
@@ -525,14 +549,14 @@ void handle_debug(UciState& state, std::string_view args) {
   } else if (token == "off") {
     state.debug = false;
   }
-  send_info(std::string("debug ") + (state.debug ? "on" : "off"));
+  send_info(state.io, std::string("debug ") + (state.debug ? "on" : "off"));
 }
 
 void handle_ucinewgame(UciState& state) {
   state.pos = Position::from_fen(kStartPositionFen, false);
 }
 
-void handle_trace(std::string_view args) {
+void handle_trace(UciState& state, std::string_view args) {
   std::string command = consume_token(args);
   if (command.empty() || command == "status") {
     std::string message = "trace:";
@@ -543,7 +567,7 @@ void handle_trace(std::string_view args) {
       message.push_back('=');
       message.append(trace_enabled(topic) ? "on" : "off");
     }
-    send_info(message);
+    send_info(state.io, message);
     return;
   }
 
@@ -553,18 +577,18 @@ void handle_trace(std::string_view args) {
   } else if (command == "off") {
     enable = false;
   } else {
-    send_info("trace usage: trace [status|on|off] <topic>");
+    send_info(state.io, "trace usage: trace [status|on|off] <topic>");
     return;
   }
 
   const std::string topic_token = consume_token(args);
   if (topic_token.empty()) {
-    send_info("trace requires a topic (search|qsearch|tt|eval|moves)");
+    send_info(state.io, "trace requires a topic (search|qsearch|tt|eval|moves)");
     return;
   }
   const auto topic = trace_topic_from_string(topic_token);
   if (!topic) {
-    send_info("unknown trace topic '" + topic_token + "'");
+    send_info(state.io, "unknown trace topic '" + topic_token + "'");
     return;
   }
 
@@ -573,22 +597,22 @@ void handle_trace(std::string_view args) {
   response.append(trace_topic_name(*topic));
   response.push_back('=');
   response.append(enable ? "on" : "off");
-  send_info(response);
+  send_info(state.io, response);
 }
 
 void handle_assert(const UciState& state) {
   const InvariantStatus status = validate_position(state.pos);
   if (status.ok) {
-    send_info("assert: position ok");
+    send_info(state.io, "assert: position ok");
   } else {
-    send_info("assert failed: " + status.message);
+    send_info(state.io, "assert failed: " + status.message);
   }
 }
 
 void handle_repropack(const UciState& state) {
   std::ostringstream oss;
   SearchSnapshot snapshot;
-  const bool have_snapshot = g_worker.last_snapshot(snapshot);
+  const bool have_snapshot = state.worker.last_snapshot(snapshot);
   const Position& repro_pos = have_snapshot ? snapshot.position : state.pos;
   const char* stm = repro_pos.side_to_move() == Color::White ? "white" : "black";
   oss << "repro fen=" << repro_pos.to_fen()
@@ -630,17 +654,16 @@ void handle_repropack(const UciState& state) {
     }
   }
 
-  const auto& opts = init_options();
-  oss << " rng_seed=0x" << std::hex << opts.rng_seed << std::dec;
+  oss << " rng_seed=0x" << std::hex << state.init.options.rng_seed << std::dec;
 
   oss << " options=Threads:" << state.threads << ",Hash:" << state.hash_mb;
   if (state.debug) {
     oss << ",Debug:on";
   }
-  send_info(oss.str());
+  send_info(state.io, oss.str());
 }
 
-void handle_bench(std::string_view args) {
+void handle_bench(UciState& state, std::string_view args) {
   int depth = 4;
   if (!args.empty()) {
     const std::string token = consume_token(args);
@@ -670,7 +693,7 @@ void handle_bench(std::string_view args) {
         << " depth=" << depth
         << " nodes=" << nodes
         << " time_ms=" << elapsed_ms;
-    send_info(oss.str());
+    send_info(state.io, oss.str());
   }
 
   std::ostringstream summary;
@@ -683,13 +706,13 @@ void handle_bench(std::string_view args) {
                                static_cast<long double>(total_ms);
     summary << " nps=" << static_cast<std::uint64_t>(nps_ld);
   }
-  send_info(summary.str());
+  send_info(state.io, summary.str());
 }
 
-void handle_uci(const UciState& state) {
-  emit_id_block();
+void handle_uci(UciState& state) {
+  emit_id_block(state.io);
   emit_options(state);
-  write_line("uciok");
+  write_line(state.io, "uciok");
 }
 
 bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdown) {
@@ -703,12 +726,12 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
   if (command == "uci") {
     handle_uci(state);
   } else if (command == "isready") {
-    g_worker.wait_idle();
-    send_readyok();
+    state.worker.wait_idle();
+    send_readyok(state.io);
   } else if (command == "ucinewgame") {
-    if (g_worker.is_busy()) {
-      g_worker.request_stop();
-      g_worker.wait_idle();
+    if (state.worker.is_busy()) {
+      state.worker.request_stop();
+      state.worker.wait_idle();
     }
     handle_ucinewgame(state);
   } else if (command == "position") {
@@ -716,27 +739,27 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
   } else if (command == "go") {
     handle_go(state, view);
   } else if (command == "stop") {
-    g_worker.request_stop();
-    g_worker.wait_idle();
-    send_info("stop acknowledged");
+    state.worker.request_stop();
+    state.worker.wait_idle();
+    send_info(state.io, "stop acknowledged");
   } else if (command == "ponderhit") {
-    handle_ponderhit();
+    handle_ponderhit(state);
   } else if (command == "register") {
-    handle_register(view);
+    handle_register(state, view);
   } else if (command == "bench") {
-    handle_bench(view);
+    handle_bench(state, view);
   } else if (command == "trace") {
-    handle_trace(view);
+    handle_trace(state, view);
   } else if (command == "assert") {
     handle_assert(state);
   } else if (command == "repropack") {
     handle_repropack(state);
   } else if (command == "quit") {
     if (allow_shutdown) {
-      g_worker.shutdown();
+      state.worker.shutdown();
     } else {
-      g_worker.request_stop();
-      g_worker.wait_idle();
+      state.worker.request_stop();
+      state.worker.wait_idle();
     }
     return false;
   } else if (command == "setoption") {
@@ -744,7 +767,7 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
   } else if (command == "debug") {
     handle_debug(state, view);
   } else {
-    send_info("unknown command '" + command + "'");
+    send_info(state.io, "unknown command '" + command + "'");
   }
 
   return true;
@@ -753,14 +776,13 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
 }  // namespace
 
 void set_uci_writer(UciWriter writer) {
-  std::lock_guard<std::mutex> lock(g_io_mutex);
-  g_output_writer = writer;
+  thread_local_writer() = writer;
 }
 
 int uci_main() {
-  initialize();
+  const InitState init_state = initialize();
 
-  UciState state;
+  UciState state(init_state);
   std::string line;
 
   while (std::getline(std::cin, line)) {
@@ -773,9 +795,9 @@ int uci_main() {
 }
 
 void uci_fuzz_feed(std::string_view payload) {
-  initialize();
+  const InitState init_state = initialize();
 
-  UciState state;
+  UciState state(init_state);
   std::string_view remaining = payload;
   while (!remaining.empty()) {
     const auto newline = remaining.find('\n');
@@ -790,7 +812,7 @@ void uci_fuzz_feed(std::string_view payload) {
     remaining.remove_prefix(newline + 1);
   }
 
-  g_worker.wait_idle();
+  state.worker.wait_idle();
 }
 
 }  // namespace bby

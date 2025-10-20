@@ -2,7 +2,7 @@
 #include <cstdint>
 #include <string>
 
-#include "epd/epd.h"
+#include "epd.h"
 
 extern "C" int LLVMFuzzerTestOneInput(const std::uint8_t* data, std::size_t size) {
   if (!data || size == 0 || size > 4096) {

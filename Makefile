@@ -46,6 +46,15 @@ tsan-test: tsan
 
 perft: release
 	$(CMAKE) --build $(BUILD_DIR)/release --target bby-perft
+	$(BUILD_DIR)/release/bby-perft --suite test/data/perft_depth6.txt
+
+.PHONY: perft-diff
+perft-diff: release
+	tools/perft_compare.py external/engines/stockfish-ubuntu-x86-64-bmi2 test/data/perft_depth6.txt --depth 5 --bby $(BUILD_DIR)/release/bby-perft
+
+.PHONY: perft-telemetry
+perft-telemetry: release
+	tools/perft_telemetry.py --bby $(BUILD_DIR)/release/bby-perft --output out/perft_telemetry.log
 
 clean:
 	rm -rf $(BUILD_DIR) out

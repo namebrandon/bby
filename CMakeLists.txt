@@ -65,7 +65,7 @@ add_library(bby_core
   src/hash.cpp
   src/perft.cpp
   src/pgn.cpp
-  src/epd/epd.cpp
+  src/epd.cpp
   src/search.cpp
   src/timeman.cpp
   src/uci.cpp
