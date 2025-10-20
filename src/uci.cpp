@@ -664,7 +664,7 @@ void handle_repropack(const UciState& state) {
 }
 
 void handle_bench(UciState& state, std::string_view args) {
-  int depth = 4;
+  int depth = 12;
   if (!args.empty()) {
     const std::string token = consume_token(args);
     if (auto parsed = parse_int(token)) {
@@ -680,19 +680,35 @@ void handle_bench(UciState& state, std::string_view args) {
   for (std::size_t idx = 0; idx < kBenchFens.size(); ++idx) {
     const auto fen = kBenchFens[idx];
     Position pos = Position::from_fen(fen, false);
+    Limits limits;
+    limits.depth = static_cast<std::int16_t>(depth);
     const auto start = std::chrono::steady_clock::now();
-    const std::uint64_t nodes = perft(pos, depth);
+    const SearchResult result = search(pos, limits);
     const auto stop = std::chrono::steady_clock::now();
     const auto elapsed_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count();
-    total_nodes += nodes;
+    total_nodes += static_cast<std::uint64_t>(result.nodes);
     total_ms += static_cast<std::uint64_t>(elapsed_ms);
 
     std::ostringstream oss;
     oss << "bench index=" << (idx + 1) << '/' << kBenchFens.size()
         << " depth=" << depth
-        << " nodes=" << nodes
+        << " nodes=" << result.nodes
         << " time_ms=" << elapsed_ms;
+    if (elapsed_ms > 0) {
+      const std::uint64_t nps =
+          static_cast<std::uint64_t>((result.nodes * 1000LL) / elapsed_ms);
+      oss << " nps=" << nps;
+    }
+    if (!result.pv.line.empty()) {
+      oss << " pv=";
+      for (std::size_t pv_idx = 0; pv_idx < result.pv.line.size(); ++pv_idx) {
+        if (pv_idx > 0) {
+          oss << ',';
+        }
+        oss << move_to_uci(result.pv.line[pv_idx]);
+      }
+    }
     send_info(state.io, oss.str());
   }
 
@@ -702,11 +718,15 @@ void handle_bench(UciState& state, std::string_view args) {
           << " nodes=" << total_nodes
           << " time_ms=" << total_ms;
   if (total_ms > 0) {
-    const long double nps_ld = (static_cast<long double>(total_nodes) * 1000.0L) /
-                               static_cast<long double>(total_ms);
-    summary << " nps=" << static_cast<std::uint64_t>(nps_ld);
+    const std::uint64_t nps = (total_nodes * 1000ULL) /
+                              std::max<std::uint64_t>(1, total_ms);
+    summary << " nps=" << nps;
   }
   send_info(state.io, summary.str());
+
+  std::ostringstream signature;
+  signature << "bench " << total_nodes;
+  send_info(state.io, signature.str());
 }
 
 void handle_uci(UciState& state) {
