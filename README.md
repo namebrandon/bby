@@ -63,6 +63,22 @@ Quick perft probe:
 ./out/debug/bby-perft --depth 4 --fen "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
 ```
 
+### Tactical Smoke Tests
+
+Use the WAC harness to spot-check tactical coverage. The script relies
+on the chess-library SAN helper bundled in `third_party/chess-library`.
+
+```bash
+# quick pulse (first 10 positions, depth 3)
+python3 tools/wac_suite.py --mode quick
+
+# exhaustive pass over wacnew.epd at depth 6
+python3 tools/wac_suite.py --mode full --depth 6 --verbose
+```
+
+Add `--fail-on-miss` to make the script exit with a non-zero code when
+any entry fails.
+
 ### Manual QA Checklist
 
 Run these locally before large merges or tagging a release:

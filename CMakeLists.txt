@@ -90,5 +90,8 @@ target_link_libraries(bby-perft PRIVATE bby_core)
 add_executable(bby-epd tools/epd_main.cpp)
 target_link_libraries(bby-epd PRIVATE bby_core)
 
+add_executable(bby-san-to-uci tools/san_to_uci.cpp)
+target_include_directories(bby-san-to-uci PRIVATE third_party/chess-library)
+
 enable_testing()
 add_subdirectory(test)
