@@ -413,18 +413,20 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
   }
   std::array<int, kMaxMoves> move_scores{};
-  score_moves(moves, ordering, move_scores);
+  std::array<int, kMaxMoves> see_scores{};
+  score_moves(moves, ordering, move_scores, &see_scores, true);
 
   const std::size_t move_count = moves.size();
   constexpr int kDeltaMargin = 150;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
+    const int see_value = see_scores[move_index];
     const int margin = capture_margin(pos, move);
-    if (stand_pat + margin + kDeltaMargin < alpha) {
+    if (stand_pat + margin + kDeltaMargin < alpha && see_value <= 0) {
       continue;
     }
-    if (see(pos, move) < 0) {
+    if (see_value < 0) {
       continue;
     }
     Undo undo;

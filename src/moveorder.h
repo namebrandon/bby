@@ -28,7 +28,8 @@ struct OrderingContext {
   int ply{0};
 };
 
-void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores);
+void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores,
+                 std::array<int, kMaxMoves>* see_results = nullptr, bool force_see = false);
 void select_best_move(MoveList& ml, std::array<int, kMaxMoves>& scores, std::size_t start, std::size_t end);
 int see(const Position& pos, Move m);
 int capture_margin(const Position& pos, Move m);

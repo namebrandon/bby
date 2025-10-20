@@ -192,7 +192,8 @@ std::size_t HistoryTable::index(Color color, Move move) {
   return idx;
 }
 
-void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores) {
+void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores,
+                 std::array<int, kMaxMoves>* see_results, bool force_see) {
   BBY_ASSERT(ctx.pos != nullptr);
   const Position& pos = *ctx.pos;
   const std::size_t count = ml.size();
@@ -217,9 +218,18 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
       const bool needs_see =
           promotion_type(move) != PieceType::None || flag == MoveFlag::EnPassant ||
           attacker_value >= victim_value;
-      if (needs_see && see(pos, move) < 0) {
+      int see_value = 0;
+      if (force_see || needs_see) {
+        see_value = see(pos, move);
+      }
+      if (needs_see && see_value < 0) {
         score -= kBadCapturePenalty;
       }
+      if (see_results != nullptr) {
+        (*see_results)[idx] = see_value;
+      }
+    } else if (see_results != nullptr) {
+      (*see_results)[idx] = 0;
     }
 
     score += promotion_bonus(move);
