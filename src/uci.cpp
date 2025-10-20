@@ -5,8 +5,10 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -113,6 +115,19 @@ std::optional<std::int64_t> parse_int(std::string_view token) {
     return value;
   }
   return std::nullopt;
+}
+
+std::optional<double> parse_double(std::string_view token) {
+  if (token.empty()) {
+    return std::nullopt;
+  }
+  std::string copy(token);
+  char* end = nullptr;
+  const double value = std::strtod(copy.c_str(), &end);
+  if (end == copy.c_str() || (end && *end != '\0')) {
+    return std::nullopt;
+  }
+  return value;
 }
 
 Move find_uci_move(const Position& pos, std::string_view token) {
@@ -346,6 +361,8 @@ struct UciState {
   Position pos{Position::from_fen(kStartPositionFen, false)};
   int threads{1};
   int hash_mb{128};
+  int singular_margin{50};
+  std::int64_t bench_nodes_limit{500000};
   bool debug{false};
   InitState init;
 
@@ -353,6 +370,7 @@ struct UciState {
       : init(init_state) {
     worker.bind_io(&io);
     io.writer = thread_local_writer();
+    set_singular_margin(singular_margin);
   }
 };
 
@@ -366,6 +384,10 @@ void emit_options(const UciState& state) {
                              std::to_string(state.threads));
   write_line(state.io, "option name Hash type spin default 128 min 1 max 8192 value " +
                              std::to_string(state.hash_mb));
+  write_line(state.io, "option name Singular Margin type spin default 50 min 0 max 1000 value " +
+                             std::to_string(state.singular_margin));
+  write_line(state.io, "option name Bench Nodes Limit type spin default 500000 min 1000 max 10000000 value " +
+                             std::to_string(state.bench_nodes_limit));
 }
 
 void send_readyok(UciIo& io) {
@@ -484,6 +506,18 @@ void handle_setoption(UciState& state, std::string_view args) {
   } else if (name == "Threads") {
     if (auto parsed = parse_int(value)) {
       state.threads = static_cast<int>(std::clamp<std::int64_t>(*parsed, 1, 512));
+    }
+  } else if (name == "Singular Margin") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::lround(*parsed));
+      const int clamped = static_cast<int>(std::clamp(rounded, 0, 1000));
+      state.singular_margin = clamped;
+      set_singular_margin(clamped);
+    }
+  } else if (name == "Bench Nodes Limit") {
+    if (auto parsed = parse_double(value)) {
+      const std::int64_t rounded = static_cast<std::int64_t>(std::llround(*parsed));
+      state.bench_nodes_limit = std::clamp<std::int64_t>(rounded, 1000, 10'000'000);
     }
   } else if (name == "Debug Log File") {
     send_info(state.io, "debug log unsupported");
@@ -665,10 +699,17 @@ void handle_repropack(const UciState& state) {
 
 void handle_bench(UciState& state, std::string_view args) {
   int depth = 12;
+  int max_positions = static_cast<int>(kBenchFens.size());
   if (!args.empty()) {
     const std::string token = consume_token(args);
     if (auto parsed = parse_int(token)) {
-      depth = static_cast<int>(*parsed);
+      depth = static_cast<int>(std::max<std::int64_t>(*parsed, 1));
+    }
+    if (!args.empty()) {
+      if (auto parsed = parse_int(consume_token(args))) {
+        max_positions = static_cast<int>(std::clamp<std::int64_t>(
+            *parsed, 1, static_cast<std::int64_t>(kBenchFens.size())));
+      }
     }
   }
   if (depth < 1) {
@@ -677,11 +718,16 @@ void handle_bench(UciState& state, std::string_view args) {
 
   std::uint64_t total_nodes = 0;
   std::uint64_t total_ms = 0;
-  for (std::size_t idx = 0; idx < kBenchFens.size(); ++idx) {
+  const std::size_t total_positions = std::min<std::size_t>(kBenchFens.size(),
+                                                            static_cast<std::size_t>(max_positions));
+  for (std::size_t idx = 0; idx < total_positions; ++idx) {
     const auto fen = kBenchFens[idx];
     Position pos = Position::from_fen(fen, false);
     Limits limits;
     limits.depth = static_cast<std::int16_t>(depth);
+    if (state.bench_nodes_limit > 0) {
+      limits.nodes = state.bench_nodes_limit;
+    }
     const auto start = std::chrono::steady_clock::now();
     const SearchResult result = search(pos, limits);
     const auto stop = std::chrono::steady_clock::now();
@@ -709,11 +755,14 @@ void handle_bench(UciState& state, std::string_view args) {
         oss << move_to_uci(result.pv.line[pv_idx]);
       }
     }
+    if (result.aborted) {
+      oss << " truncated=1";
+    }
     send_info(state.io, oss.str());
   }
 
   std::ostringstream summary;
-  summary << "bench summary positions=" << kBenchFens.size()
+  summary << "bench summary positions=" << total_positions
           << " depth=" << depth
           << " nodes=" << total_nodes
           << " time_ms=" << total_ms;

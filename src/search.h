@@ -26,8 +26,11 @@ struct SearchResult {
   bool tt_hit{false};
   Move primary_killer{};
   int history_bonus{0};
+  bool aborted{false};
 };
 
 SearchResult search(Position& root, const Limits& limits);
+void set_singular_margin(int margin);
+int singular_margin();
 
 }  // namespace bby

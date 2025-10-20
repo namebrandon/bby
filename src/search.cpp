@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
@@ -17,7 +18,6 @@ constexpr Score kMateValue = kEvalInfinity - 512;
 constexpr Score mate_score(int ply) { return kMateValue - ply; }
 constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
-constexpr Score kSingularMargin = 50;
 
 struct PVLine {
   std::array<Move, kMaxPly> moves{};
@@ -35,7 +35,11 @@ struct SearchState {
   HistoryTable history;
   std::array<std::array<Move, 2>, kMaxPly> killers{};
   std::int64_t nodes{0};
+  std::int64_t node_cap{-1};
+  bool aborted{false};
 };
+
+std::atomic<int> g_singular_margin{50};
 
 bool is_quiet_move(Move move) {
   const MoveFlag flag = move_flag(move);
@@ -128,7 +132,11 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
   if (tt_entry.bound != BoundType::Lower) {
     return false;
   }
-  const Score singular_beta = tt_entry.score - kSingularMargin;
+  const int margin = g_singular_margin.load(std::memory_order_relaxed);
+  if (margin <= 0) {
+    return false;
+  }
+  const Score singular_beta = tt_entry.score - static_cast<Score>(margin);
   const Score singular_alpha = singular_beta - 1;
   if (singular_beta <= -kEvalInfinity) {
     return false;
@@ -163,6 +171,10 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply, PVLine& pv) {
   state.nodes++;
+  if (state.node_cap >= 0 && state.nodes > state.node_cap) {
+    state.aborted = true;
+    return alpha;
+  }
   pv.length = 0;
 
   if (ply >= kMaxPly - 1) {
@@ -261,6 +273,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     bound = BoundType::Lower;
   }
 
+  if (state.aborted) {
+    return best_score;
+  }
+
   TTEntry store{};
   store.best_move = best_move;
   store.score = best_score;
@@ -275,6 +291,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply) {
   state.nodes++;
+  if (state.node_cap >= 0 && state.nodes > state.node_cap) {
+    state.aborted = true;
+    return alpha;
+  }
   const bool in_check = pos.in_check(pos.side_to_move());
   if (in_check) {
     MoveList evasions;
@@ -293,6 +313,9 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
       }
       if (score > alpha) {
         alpha = score;
+      }
+      if (state.aborted) {
+        break;
       }
       if (alpha >= beta) {
         break;
@@ -339,6 +362,9 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
     if (score > alpha) {
       alpha = score;
     }
+    if (state.aborted) {
+      break;
+    }
     if (alpha >= beta) {
       break;
     }
@@ -353,6 +379,8 @@ SearchResult search(Position& root, const Limits& limits) {
   SearchTables tables;
   SearchState state;
   state.nodes = 0;
+  state.node_cap = limits.nodes;
+  state.aborted = false;
 
   emit_search_trace_start(root, limits);
 
@@ -374,6 +402,9 @@ SearchResult search(Position& root, const Limits& limits) {
                                 tables, state, 0, iteration_pv);
     result.eval = score;
     result.nodes = state.nodes;
+    if (state.aborted) {
+      break;
+    }
 
     if (iteration_pv.length > 0) {
       pv = iteration_pv;
@@ -388,9 +419,19 @@ SearchResult search(Position& root, const Limits& limits) {
                              : state.history.get(root.side_to_move(), result.best);
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
+  result.aborted = state.aborted;
 
   emit_search_trace_finish(result);
   return result;
+}
+
+void set_singular_margin(int margin) {
+  const int clamped = std::clamp(margin, 0, 10000);
+  g_singular_margin.store(clamped, std::memory_order_relaxed);
+}
+
+int singular_margin() {
+  return g_singular_margin.load(std::memory_order_relaxed);
 }
 
 }  // namespace bby
