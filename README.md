@@ -10,7 +10,7 @@ make debug
 
 # run the engine (UCI protocol)
 ./build/debug/bby
-# inside the engine, try `bench` to run the deterministic 50-position suite
+# inside the engine, try `bench` (depth defaults to 4 over 12 curated FENs)
 # debug helpers: `trace status`, `assert`, `repropack`
 ```
 
@@ -70,6 +70,19 @@ Run these locally before large merges or tagging a release:
 - `ctest --test-dir build/debug --output-on-failure`
 - `make sanitize-test` (Address/UB sanitizers)
 - `make tsan-test` (ThreadSanitizer; slower, run when touching threading code)
+
+## Benchmark Telemetry (search)
+
+The CLI `bench` command now runs the full negamax+quiescence pipeline across 12 curated SeaJay/Arasan FENs. Recent single-thread release measurements:
+
+| Depth | Nodes | Time (ms) | NPS |
+|-------|-------|-----------|-----|
+| 4 | 275,717 | 383 | ~0.72 MN/s |
+| 6 | 3,959,829 | 4,348 | ~0.91 MN/s |
+| 7 | 13,762,688 | 13,500 | ~1.02 MN/s |
+| 8 | 41,711,545 | 40,779 | ~1.02 MN/s |
+
+Record the exact `bench <node-count>` signature from the current binary in every commit message per the commit-discipline directive.
 
 ## Repository Layout (summary)
 
