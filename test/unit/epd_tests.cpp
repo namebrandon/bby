@@ -62,4 +62,18 @@ TEST_CASE("load_epd_file aggregates parse errors", "[epd]") {
   std::filesystem::remove(temp_path, ec);
 }
 
+TEST_CASE("WAC EPD exposes best-move operations", "[epd][wac]") {
+  const auto base = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path();
+  const auto path = base / "tests/positions/wacnew.epd";
+  const auto result = load_epd_file(path.string());
+  REQUIRE(result.ok());
+  REQUIRE(result.errors.empty());
+  REQUIRE(result.records.size() == 20);
+  for (const auto& record : result.records) {
+    INFO(record.position.to_fen());
+    REQUIRE(record.operations.contains("bm"));
+    REQUIRE_FALSE(record.operations.at("bm").empty());
+  }
+}
+
 }  // namespace bby::test
