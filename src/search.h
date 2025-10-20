@@ -22,6 +22,10 @@ struct SearchResult {
   PV pv;
   int depth{0};
   std::int64_t nodes{0};
+  Score eval{0};
+  bool tt_hit{false};
+  Move primary_killer{};
+  int history_bonus{0};
 };
 
 SearchResult search(Position& root, const Limits& limits);

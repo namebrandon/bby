@@ -14,6 +14,10 @@ struct HistoryTable {
   std::array<int, 2 * kStride> values{};
 
   [[nodiscard]] int get(Color color, Move move) const;
+  void add(Color color, Move move, int delta);
+
+private:
+  [[nodiscard]] static std::size_t index(Color color, Move move);
 };
 
 struct OrderingContext {

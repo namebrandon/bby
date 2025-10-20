@@ -113,13 +113,26 @@ int see_recursive(Position& pos, Square target) {
 }  // namespace
 
 int HistoryTable::get(Color color, Move move) const {
+  const std::size_t idx = index(color, move);
+  return values[idx];
+}
+
+void HistoryTable::add(Color color, Move move, int delta) {
+  const std::size_t idx = index(color, move);
+  int value = values[idx] + delta;
+  constexpr int kMaxHistory = 32'000;
+  value = std::clamp(value, -kMaxHistory, kMaxHistory);
+  values[idx] = value;
+}
+
+std::size_t HistoryTable::index(Color color, Move move) {
   const int from = static_cast<int>(from_square(move));
   const int to = static_cast<int>(to_square(move));
-  const std::size_t idx =
-      static_cast<std::size_t>(color_index(color)) * kStride +
-      static_cast<std::size_t>(from) * 64 + static_cast<std::size_t>(to);
-  BBY_ASSERT(idx < values.size());
-  return values[idx];
+  const std::size_t base = static_cast<std::size_t>(color_index(color)) * kStride;
+  const std::size_t idx = base + static_cast<std::size_t>(from) * 64 +
+                          static_cast<std::size_t>(to);
+  BBY_ASSERT(idx < 2 * kStride);
+  return idx;
 }
 
 void score_moves(MoveList& ml, const OrderingContext& ctx) {
