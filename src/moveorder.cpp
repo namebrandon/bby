@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include <utility>
 
 #include "common.h"
@@ -67,11 +68,46 @@ int promotion_bonus(Move m) {
   }
 }
 
+int promotion_delta(Move m) {
+  const PieceType promo = promotion_type(m);
+  if (promo == PieceType::None) {
+    return 0;
+  }
+  return kPieceValues[static_cast<int>(promo)] -
+         kPieceValues[static_cast<int>(PieceType::Pawn)];
+}
+
 int history_score(const HistoryTable* history, const Position& pos, Move m) {
   if (!history) {
     return 0;
   }
   return history->get(pos.side_to_move(), m) * kHistoryScale;
+}
+
+int see_recursive(Position& pos, Square target) {
+  MoveList moves;
+  pos.generate_moves(moves, GenStage::Captures);
+  int best = std::numeric_limits<int>::min();
+  for (std::size_t idx = 0; idx < moves.size(); ++idx) {
+    const Move move = moves[idx];
+    if (to_square(move) != target) {
+      continue;
+    }
+    const Piece victim = capture_victim(pos, move);
+    const int gain = material(victim) + promotion_delta(move);
+    Undo undo;
+    pos.make(move, undo);
+    const int reply = see_recursive(pos, target);
+    pos.unmake(move, undo);
+    const int net = gain - reply;
+    if (net > best) {
+      best = net;
+    }
+  }
+  if (best == std::numeric_limits<int>::min()) {
+    return 0;
+  }
+  return best;
 }
 
 }  // namespace
@@ -142,11 +178,21 @@ int see(const Position& pos, Move m) {
   if (m.is_null()) {
     return 0;
   }
-  const Square from = from_square(m);
-  const Piece attacker = pos.piece_on(from);
+
+  const MoveFlag flag = move_flag(m);
+  if (!is_capture_like(flag) && promotion_type(m) == PieceType::None) {
+    return 0;
+  }
+
   const Piece victim = capture_victim(pos, m);
-  const int gain = material(victim) - material(attacker);
-  return gain;
+  const int initial_gain = material(victim) + promotion_delta(m);
+
+  Position temp = pos;
+  Undo undo;
+  temp.make(m, undo);
+  const int reply = see_recursive(temp, to_square(m));
+  temp.unmake(m, undo);
+  return initial_gain - reply;
 }
 
 }  // namespace bby

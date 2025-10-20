@@ -111,4 +111,10 @@ TEST_CASE("SEE estimates material gain", "[moveorder]") {
   REQUIRE(see(pos, quiet) <= 0);
 }
 
+TEST_CASE("SEE identifies losing queen grab", "[moveorder]") {
+  Position pos = Position::from_fen("4k3/8/4p3/3p4/4Q3/8/8/4K3 w - - 0 1", true);
+  Move capture = make_move(Square::E4, Square::D5, MoveFlag::Capture);
+  REQUIRE(see(pos, capture) < 0);
+}
+
 }  // namespace bby::test
