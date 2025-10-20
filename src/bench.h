@@ -7,63 +7,20 @@
 
 namespace bby {
 
-inline constexpr std::array<std::string_view, 50> kBenchFens = {
-    // Base set of 10 positions repeated to reach 50 entries.
+inline constexpr std::array<std::string_view, 12> kBenchFens = {
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-    "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2Q1p/PPPB1PPP/R3K2R w KQkq - 0 1",
+    "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+    "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4",
+    "r1bqkbnr/pppp1ppp/2n5/1B2p3/4P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 3 3",
     "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-    "rnbq1bnr/ppppkppp/8/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQ - 2 4",
-    "r4rk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2Q1RK1 w - - 0 1",
-    "r2q1rk1/pp2bppp/2n1pn2/2pp4/3P4/1P1BPN2/PB3PPP/R2Q1RK1 w - - 0 1",
-    "4rrk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2QR1K1 w - - 0 1",
-    "rnbqkbnr/pp1ppppp/2p5/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-    "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQkq - 0 6",
+    "8/pp3p1k/2p2q1p/3r1P2/5R2/7P/P1P1QP2/7K b - - 0 1",
+    "r1bq1rk1/pp2nppp/4n3/3ppP2/1b1P4/3BP3/PP2N1PP/R1BQNRK1 b - - 1 8",
+    "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1",
+    "r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10",
+    "8/k7/3p4/p2P1p2/P2P1P2/8/8/K7 w - - 0 1",
+    "r2q1rk1/ppp2ppp/2n1bn2/2bpp3/3P4/3QPN2/PPP1BPPP/R1B1K2R w KQ - 0 8",
+    "rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8"};
 
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-    "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2Q1p/PPPB1PPP/R3K2R w KQkq - 0 1",
-    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-    "rnbq1bnr/ppppkppp/8/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQ - 2 4",
-    "r4rk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2Q1RK1 w - - 0 1",
-    "r2q1rk1/pp2bppp/2n1pn2/2pp4/3P4/1P1BPN2/PB3PPP/R2Q1RK1 w - - 0 1",
-    "4rrk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2QR1K1 w - - 0 1",
-    "rnbqkbnr/pp1ppppp/2p5/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-    "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQkq - 0 6",
-
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-    "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2Q1p/PPPB1PPP/R3K2R w KQkq - 0 1",
-    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-    "rnbq1bnr/ppppkppp/8/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQ - 2 4",
-    "r4rk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2Q1RK1 w - - 0 1",
-    "r2q1rk1/pp2bppp/2n1pn2/2pp4/3P4/1P1BPN2/PB3PPP/R2Q1RK1 w - - 0 1",
-    "4rrk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2QR1K1 w - - 0 1",
-    "rnbqkbnr/pp1ppppp/2p5/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-    "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQkq - 0 6",
-
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-    "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2Q1p/PPPB1PPP/R3K2R w KQkq - 0 1",
-    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-    "rnbq1bnr/ppppkppp/8/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQ - 2 4",
-    "r4rk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2Q1RK1 w - - 0 1",
-    "r2q1rk1/pp2bppp/2n1pn2/2pp4/3P4/1P1BPN2/PB3PPP/R2Q1RK1 w - - 0 1",
-    "4rrk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2QR1K1 w - - 0 1",
-    "rnbqkbnr/pp1ppppp/2p5/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-    "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQkq - 0 6",
-
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
-    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1",
-    "r3k2r/p1ppqpb1/bn2pnp1/2P5/1p2P3/2N2Q1p/PPPB1PPP/R3K2R w KQkq - 0 1",
-    "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
-    "rnbq1bnr/ppppkppp/8/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQ - 2 4",
-    "r4rk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2Q1RK1 w - - 0 1",
-    "r2q1rk1/pp2bppp/2n1pn2/2pp4/3P4/1P1BPN2/PB3PPP/R2Q1RK1 w - - 0 1",
-    "4rrk1/1pp1qppp/p1np1n2/4p3/1PP1P3/P1N1BP2/3P2PP/R2QR1K1 w - - 0 1",
-    "rnbqkbnr/pp1ppppp/2p5/8/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
-    "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2NP1N2/PPP2PPP/R1BQK2R w KQkq - 0 6"};
-
-static_assert(kBenchFens.size() == 50, "Bench suite must contain 50 positions");
+static_assert(kBenchFens.size() == 12, "Bench suite must contain 12 positions");
 
 }  // namespace bby

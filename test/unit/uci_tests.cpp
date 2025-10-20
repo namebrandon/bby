@@ -26,8 +26,8 @@ void uci_fuzz_feed(std::string_view payload);
 
 namespace bby::test {
 
-TEST_CASE("Bench suite exposes 50 valid FENs", "[uci][bench]") {
-  REQUIRE(kBenchFens.size() == 50);
+TEST_CASE("Bench suite exposes 12 valid FENs", "[uci][bench]") {
+  REQUIRE(kBenchFens.size() == 12);
   for (const auto fen : kBenchFens) {
     REQUIRE_NOTHROW(Position::from_fen(fen, true));
   }

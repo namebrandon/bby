@@ -362,7 +362,7 @@ struct UciState {
   int threads{1};
   int hash_mb{128};
   int singular_margin{50};
-  std::int64_t bench_nodes_limit{500000};
+  std::int64_t bench_nodes_limit{0};
   bool debug{false};
   InitState init;
 
@@ -386,7 +386,7 @@ void emit_options(const UciState& state) {
                              std::to_string(state.hash_mb));
   write_line(state.io, "option name Singular Margin type spin default 50 min 0 max 1000 value " +
                              std::to_string(state.singular_margin));
-  write_line(state.io, "option name Bench Nodes Limit type spin default 500000 min 1000 max 10000000 value " +
+  write_line(state.io, "option name Bench Nodes Limit type spin default 0 min 0 max 10000000 value " +
                              std::to_string(state.bench_nodes_limit));
 }
 
@@ -517,7 +517,7 @@ void handle_setoption(UciState& state, std::string_view args) {
   } else if (name == "Bench Nodes Limit") {
     if (auto parsed = parse_double(value)) {
       const std::int64_t rounded = static_cast<std::int64_t>(std::llround(*parsed));
-      state.bench_nodes_limit = std::clamp<std::int64_t>(rounded, 1000, 10'000'000);
+      state.bench_nodes_limit = std::clamp<std::int64_t>(rounded, 0, 10'000'000);
     }
   } else if (name == "Debug Log File") {
     send_info(state.io, "debug log unsupported");
@@ -698,7 +698,7 @@ void handle_repropack(const UciState& state) {
 }
 
 void handle_bench(UciState& state, std::string_view args) {
-  int depth = 12;
+  int depth = 4;
   int max_positions = static_cast<int>(kBenchFens.size());
   if (!args.empty()) {
     const std::string token = consume_token(args);
