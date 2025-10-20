@@ -1,6 +1,8 @@
 #include "search.h"
 
+#include <algorithm>
 #include <array>
+#include <cstdint>
 #include <iomanip>
 #include <sstream>
 
@@ -10,7 +12,13 @@ namespace bby {
 namespace {
 
 constexpr std::size_t kDefaultTTMegabytes = 16;
+constexpr Score kEvalInfinity = 30000;
 constexpr int kQuietHistoryBonus = 128;
+
+struct PVLine {
+  std::array<Move, kMaxPly> moves{};
+  int length{0};
+};
 
 struct SearchTables {
   SearchTables() : tt(kDefaultTTMegabytes) {}
@@ -22,6 +30,7 @@ struct SearchTables {
 struct SearchState {
   HistoryTable history;
   std::array<std::array<Move, 2>, kMaxPly> killers{};
+  std::int64_t nodes{0};
 };
 
 bool is_quiet_move(Move move) {
@@ -30,7 +39,7 @@ bool is_quiet_move(Move move) {
 }
 
 void update_killers(SearchState& state, int ply, Move move) {
-  if (ply < 0 || ply >= kMaxPly) {
+  if (move.is_null() || ply < 0 || ply >= kMaxPly) {
     return;
   }
   auto& slots = state.killers[static_cast<std::size_t>(ply)];
@@ -92,65 +101,156 @@ void emit_search_trace_finish(const SearchResult& result) {
   trace_emit(TraceTopic::Search, oss.str());
 }
 
+void set_pv(PVLine& dst, Move move, const PVLine& child) {
+  dst.moves[0] = move;
+  std::copy(child.moves.begin(), child.moves.begin() + child.length, dst.moves.begin() + 1);
+  dst.length = child.length + 1;
+}
+
+Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
+              SearchState& state, int ply, PVLine& pv) {
+  state.nodes++;
+  pv.length = 0;
+
+  if (ply >= kMaxPly - 1) {
+    return evaluate(pos);
+  }
+
+  const Score alpha_orig = alpha;
+  TTEntry tt_entry{};
+  const bool tt_hit = tables.tt.probe(pos.zobrist(), tt_entry);
+  if (tt_hit && tt_entry.depth >= depth) {
+    const Score tt_score = tt_entry.score;
+    if (tt_entry.bound == BoundType::Exact) {
+      return tt_score;
+    }
+    if (tt_entry.bound == BoundType::Lower && tt_score >= beta) {
+      return tt_score;
+    }
+    if (tt_entry.bound == BoundType::Upper && tt_score <= alpha) {
+      return tt_score;
+    }
+  }
+
+  if (depth <= 0) {
+    return evaluate(pos);
+  }
+
+  MoveList moves;
+  pos.generate_moves(moves, GenStage::All);
+  if (moves.size() == 0) {
+    return evaluate(pos);
+  }
+
+  OrderingContext ordering{};
+  ordering.pos = &pos;
+  ordering.ply = ply;
+  ordering.history = &state.history;
+  if (static_cast<std::size_t>(ply) < state.killers.size()) {
+    ordering.killers = state.killers[static_cast<std::size_t>(ply)];
+  }
+  if (tt_hit) {
+    ordering.tt = &tt_entry;
+  }
+  score_moves(moves, ordering);
+
+  Move best_move{};
+  Score best_score = -kEvalInfinity;
+  PVLine child_pv{};
+
+  for (const Move move : moves) {
+    Undo undo;
+    pos.make(move, undo);
+    const Score score = -negamax(pos, depth - 1, -beta, -alpha, tables, state, ply + 1, child_pv);
+    pos.unmake(move, undo);
+
+    if (score > best_score) {
+      best_score = score;
+      best_move = move;
+      set_pv(pv, move, child_pv);
+    }
+
+    if (score > alpha) {
+      alpha = score;
+      if (is_quiet_move(move)) {
+        const int bonus = kQuietHistoryBonus * depth * depth;
+        update_history(state, pos.side_to_move(), move, bonus);
+      }
+    }
+
+    if (alpha >= beta) {
+      if (is_quiet_move(move)) {
+        update_killers(state, ply, move);
+        const int bonus = kQuietHistoryBonus * depth * depth;
+        update_history(state, pos.side_to_move(), move, bonus);
+      }
+      break;
+    }
+  }
+
+  if (best_score == -kEvalInfinity) {
+    best_score = evaluate(pos);
+  }
+
+  BoundType bound = BoundType::Exact;
+  if (best_score <= alpha_orig) {
+    bound = BoundType::Upper;
+  } else if (best_score >= beta) {
+    bound = BoundType::Lower;
+  }
+
+  TTEntry store{};
+  store.best_move = best_move;
+  store.score = best_score;
+  store.static_eval = best_score;
+  store.depth = static_cast<std::uint8_t>(std::clamp(depth, 0, 255));
+  store.bound = bound;
+  tables.tt.store(pos.zobrist(), store);
+
+  return best_score;
+}
+
 }  // namespace
 
 SearchResult search(Position& root, const Limits& limits) {
   SearchTables tables;
   SearchState state;
-
-  ++tables.generation;
-  tables.tt.set_generation(tables.generation);
+  state.nodes = 0;
 
   emit_search_trace_start(root, limits);
 
-  OrderingContext ordering{};
-  ordering.pos = &root;
-  ordering.ply = 0;
-  ordering.history = &state.history;
-  ordering.killers = state.killers[0];
-
-  TTEntry tt_entry{};
-  const bool tt_hit = tables.tt.probe(root.zobrist(), tt_entry);
-  if (tt_hit) {
-    ordering.tt = &tt_entry;
-  }
-
-  MoveList moves;
-  root.generate_moves(moves, GenStage::All);
-  score_moves(moves, ordering);
-
+  const int max_depth = limits.depth > 0 ? limits.depth : 1;
   SearchResult result;
-  result.depth = 1;
-  result.nodes = static_cast<std::int64_t>(moves.size());
-  result.tt_hit = tt_hit;
+  result.best = Move{};
+  result.eval = 0;
 
-  const Score eval_score = tt_hit ? tt_entry.score : evaluate(root);
-  result.eval = eval_score;
+  PVLine pv{};
+  PVLine iteration_pv{};
 
-  if (moves.size() > 0) {
-    result.best = moves[0];
-    result.pv.line.push_back(result.best);
-  }
+  for (int current_depth = 1; current_depth <= max_depth; ++current_depth) {
+    ++tables.generation;
+    tables.tt.set_generation(tables.generation);
 
-  if (!result.best.is_null() && is_quiet_move(result.best)) {
-    update_history(state, root.side_to_move(), result.best, kQuietHistoryBonus);
-    update_killers(state, ordering.ply, result.best);
+    result.depth = current_depth;
+    iteration_pv = PVLine{};
+    const Score score = negamax(root, current_depth, -kEvalInfinity, kEvalInfinity,
+                                tables, state, 0, iteration_pv);
+    result.eval = score;
+    result.nodes = state.nodes;
+
+    if (iteration_pv.length > 0) {
+      pv = iteration_pv;
+      result.best = iteration_pv.moves[0];
+      result.pv.line.assign(iteration_pv.moves.begin(), iteration_pv.moves.begin() + iteration_pv.length);
+    }
   }
 
   result.primary_killer = state.killers[0][0];
   result.history_bonus = result.best.is_null()
-                              ? 0
-                              : state.history.get(root.side_to_move(), result.best);
-
-  if (!tt_hit) {
-    TTEntry store{};
-    store.best_move = result.best;
-    store.score = eval_score;
-    store.static_eval = eval_score;
-    store.depth = 0;
-    store.bound = BoundType::Exact;
-    tables.tt.store(root.zobrist(), store);
-  }
+                             ? 0
+                             : state.history.get(root.side_to_move(), result.best);
+  TTEntry root_entry{};
+  result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
 
   emit_search_trace_finish(result);
   return result;
