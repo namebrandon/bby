@@ -14,6 +14,7 @@ namespace {
 constexpr std::size_t kDefaultTTMegabytes = 16;
 constexpr Score kEvalInfinity = 30000;
 constexpr int kQuietHistoryBonus = 128;
+constexpr Score kSingularMargin = 50;
 
 struct PVLine {
   std::array<Move, kMaxPly> moves{};
@@ -107,6 +108,55 @@ void set_pv(PVLine& dst, Move move, const PVLine& child) {
   dst.length = child.length + 1;
 }
 
+Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
+              SearchState& state, int ply);
+Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
+              SearchState& state, int ply, PVLine& pv);
+
+bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
+                            int depth, const TTEntry& tt_entry,
+                            SearchTables& tables, SearchState& state, int ply) {
+  if (tt_move.is_null()) {
+    return false;
+  }
+  if (depth < 2) {
+    return false;
+  }
+  if (tt_entry.bound != BoundType::Lower) {
+    return false;
+  }
+  const Score singular_beta = tt_entry.score - kSingularMargin;
+  const Score singular_alpha = singular_beta - 1;
+  if (singular_beta <= -kEvalInfinity) {
+    return false;
+  }
+
+  const int reduced_depth = std::max(0, depth - 2);
+  const auto history_snapshot = state.history;
+  const auto killers_snapshot = state.killers;
+
+  PVLine dummy{};
+  for (std::size_t idx = 0; idx < moves.size(); ++idx) {
+    const Move move = moves[idx];
+    if (move == tt_move) {
+      continue;
+    }
+    Undo undo;
+    pos.make(move, undo);
+    const Score score =
+        -negamax(pos, reduced_depth, -singular_beta, -singular_alpha, tables, state, ply + 1, dummy);
+    pos.unmake(move, undo);
+    if (score >= singular_beta) {
+      state.history = history_snapshot;
+      state.killers = killers_snapshot;
+      return false;
+    }
+  }
+  state.history = history_snapshot;
+  state.killers = killers_snapshot;
+  return true;
+}
+
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply, PVLine& pv) {
   state.nodes++;
@@ -133,7 +183,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   }
 
   if (depth <= 0) {
-    return evaluate(pos);
+    return qsearch(pos, alpha, beta, tables, state, ply);
   }
 
   MoveList moves;
@@ -154,6 +204,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   }
   score_moves(moves, ordering);
 
+  const bool singular_extension = tt_hit && should_extend_singular(pos, moves, tt_entry.best_move,
+                                                                   depth, tt_entry, tables,
+                                                                   state, ply);
+
   Move best_move{};
   Score best_score = -kEvalInfinity;
   PVLine child_pv{};
@@ -161,7 +215,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   for (const Move move : moves) {
     Undo undo;
     pos.make(move, undo);
-    const Score score = -negamax(pos, depth - 1, -beta, -alpha, tables, state, ply + 1, child_pv);
+    const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
+    const int next_depth = depth - 1 + extension;
+    const Score score = -negamax(pos, next_depth, -beta, -alpha, tables, state, ply + 1, child_pv);
     pos.unmake(move, undo);
 
     if (score > best_score) {
@@ -208,6 +264,55 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   tables.tt.store(pos.zobrist(), store);
 
   return best_score;
+}
+
+Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
+              SearchState& state, int ply) {
+  state.nodes++;
+  const Score stand_pat = evaluate(pos);
+  if (stand_pat >= beta) {
+    return stand_pat;
+  }
+  Score best = stand_pat;
+  if (stand_pat > alpha) {
+    alpha = stand_pat;
+  }
+
+  MoveList moves;
+  pos.generate_moves(moves, GenStage::Captures);
+  if (moves.size() == 0) {
+    return stand_pat;
+  }
+
+  OrderingContext ordering{};
+  ordering.pos = &pos;
+  ordering.ply = ply;
+  ordering.history = &state.history;
+  if (static_cast<std::size_t>(ply) < state.killers.size()) {
+    ordering.killers = state.killers[static_cast<std::size_t>(ply)];
+  }
+  score_moves(moves, ordering);
+
+  for (const Move move : moves) {
+    if (see(pos, move) < 0) {
+      continue;
+    }
+    Undo undo;
+    pos.make(move, undo);
+    const Score score = -qsearch(pos, -beta, -alpha, tables, state, ply + 1);
+    pos.unmake(move, undo);
+    if (score > best) {
+      best = score;
+    }
+    if (score > alpha) {
+      alpha = score;
+    }
+    if (alpha >= beta) {
+      break;
+    }
+  }
+
+  return best;
 }
 
 }  // namespace

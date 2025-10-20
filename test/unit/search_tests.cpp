@@ -90,4 +90,15 @@ TEST_CASE("Search prefers immediate winning capture", "[search]") {
   REQUIRE(result.nodes > 0);
 }
 
+TEST_CASE("Quiescence search resolves horizon captures", "[search][qsearch]") {
+  Position pos = Position::from_fen("4k3/8/8/4q3/4Q3/8/8/4K3 w - - 0 1", false);
+  Limits limits;
+  limits.depth = 0;
+
+  const auto result = search(pos, limits);
+  REQUIRE_FALSE(result.best.is_null());
+  REQUIRE(move_to_uci(result.best) == std::string("e4e5"));
+  REQUIRE(result.eval > 0);
+}
+
 }  // namespace bby::test
