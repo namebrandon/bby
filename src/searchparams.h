@@ -20,6 +20,9 @@ struct Limits {
   int multipv{1};
   int lmr_min_depth{kLmrMinDepthDefault};
   int lmr_min_move{kLmrMinMoveDefault};
+  bool enable_static_futility{true};
+  int static_futility_margin{128};
+  int static_futility_depth{1};
   bool infinite{false};
 };
 

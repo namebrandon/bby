@@ -210,4 +210,24 @@ TEST_CASE("Search applies late move reductions on quiet moves", "[search][lmr]")
   g_trace_sink = nullptr;
 }
 
+TEST_CASE("Static futility pruning can skip hopeless branches", "[search][futility]") {
+  const std::string fen =
+      "6k1/5ppp/8/8/8/8/5PPP/6KQ w - - 0 1";
+  Limits limits;
+  limits.depth = 2;
+  limits.enable_static_futility = true;
+  limits.static_futility_margin = 0;
+  limits.static_futility_depth = 1;
+
+  Position pos = Position::from_fen(fen, false);
+  const auto enabled = search(pos, limits);
+  REQUIRE(enabled.static_futility_prunes > 0);
+
+  Limits disabled = limits;
+  disabled.enable_static_futility = false;
+  Position pos_disabled = Position::from_fen(fen, false);
+  const auto disabled_result = search(pos_disabled, disabled);
+  REQUIRE(disabled_result.static_futility_prunes == 0);
+}
+
 }  // namespace bby::test

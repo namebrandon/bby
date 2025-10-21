@@ -77,6 +77,10 @@ struct SearchState {
   int root_exclude_count{0};
   int lmr_min_depth{kLmrMinDepthDefault};
   int lmr_min_move{kLmrMinMoveDefault};
+  bool enable_static_futility{true};
+  int static_futility_margin{128};
+  int static_futility_depth{1};
+  int static_futility_prunes{0};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -268,6 +272,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     return alpha;
   }
   const bool in_pv = (pv_table != nullptr);
+  const bool trace_search = trace_enabled(TraceTopic::Search);
+  Score static_eval = 0;
+  bool have_static_eval = false;
   if (in_pv) {
     pv_table->reset_row(ply);
   }
@@ -298,6 +305,32 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   }
 
   const bool in_check = pos.in_check(pos.side_to_move());
+
+  if (!in_check && state.enable_static_futility && state.static_futility_depth > 0 &&
+      ply > 0 && !in_pv && !previous_null && depth <= state.static_futility_depth) {
+    static_eval = evaluate(pos);
+    have_static_eval = true;
+    const Score margin =
+        static_cast<Score>(state.static_futility_margin * std::max(depth, 1));
+    Score futility_value = static_eval + margin;
+    futility_value = std::clamp(futility_value, static_cast<Score>(-kEvalInfinity),
+                                static_cast<Score>(kEvalInfinity));
+    if (futility_value <= alpha) {
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search static futility"
+            << " ply=" << ply
+            << " depth=" << depth
+            << " alpha=" << alpha
+            << " static=" << static_eval
+            << " margin=" << margin
+            << " value=" << futility_value;
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+      ++state.static_futility_prunes;
+      return futility_value;
+    }
+  }
 
   if (!in_check && !previous_null && depth >= kNullMoveReduction + 1 &&
       has_sufficient_material_for_null(pos)) {
@@ -344,7 +377,6 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
   Move best_move{};
   Score best_score = -kEvalInfinity;
-  const bool trace_search = trace_enabled(TraceTopic::Search);
 
   const std::size_t move_count = moves.size();
   std::size_t processed_moves = 0;
@@ -467,7 +499,11 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   }
 
   if (best_score == -kEvalInfinity) {
-    best_score = evaluate(pos);
+    if (!have_static_eval) {
+      static_eval = evaluate(pos);
+      have_static_eval = true;
+    }
+    best_score = static_eval;
     if (pv_table != nullptr) {
       pv_table->reset_row(ply);
     }
@@ -487,7 +523,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   TTEntry store{};
   store.best_move = best_move;
   store.score = best_score;
-  store.static_eval = best_score;
+  store.static_eval = have_static_eval ? static_eval : best_score;
   store.depth = static_cast<std::uint8_t>(std::clamp(depth, 0, 255));
   store.bound = bound;
   tables.tt.store(pos.zobrist(), store);
@@ -640,6 +676,10 @@ SearchResult search(Position& root, const Limits& limits) {
   state.root_exclude_count = 0;
   state.lmr_min_depth = std::max(1, limits.lmr_min_depth);
   state.lmr_min_move = std::max(1, limits.lmr_min_move);
+  state.enable_static_futility = limits.enable_static_futility;
+  state.static_futility_margin = std::clamp(limits.static_futility_margin, 0, 1024);
+  state.static_futility_depth = std::clamp(limits.static_futility_depth, 0, 3);
+  state.static_futility_prunes = 0;
 
   emit_search_trace_start(root, limits);
 
@@ -830,6 +870,7 @@ SearchResult search(Position& root, const Limits& limits) {
   result.history_bonus = result.best.is_null()
                              ? 0
                              : state.history.get(root.side_to_move(), result.best);
+  result.static_futility_prunes = state.static_futility_prunes;
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
   result.aborted = state.aborted;
