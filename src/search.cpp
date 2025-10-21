@@ -4,6 +4,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <numeric>
@@ -93,6 +94,10 @@ struct SearchState {
   int multi_cut_threshold{3};
   int multi_cut_prunes{0};
   std::atomic<bool>* stop_flag{nullptr};
+  std::chrono::steady_clock::time_point start_time{};
+  std::int64_t soft_time_ms{0};
+  std::int64_t hard_time_ms{0};
+  bool use_time{false};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -280,6 +285,19 @@ bool should_abort(SearchState& state) {
   if (state.stop_flag != nullptr && state.stop_flag->load(std::memory_order_acquire)) {
     state.aborted = true;
     return true;
+  }
+  if (state.use_time && state.hard_time_ms > 0) {
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed_ms =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - state.start_time).count();
+    if (state.soft_time_ms > 0 && elapsed_ms >= state.soft_time_ms &&
+        state.stop_flag != nullptr && !state.aborted) {
+      state.stop_flag->store(true, std::memory_order_release);
+    }
+    if (elapsed_ms >= state.hard_time_ms) {
+      state.aborted = true;
+      return true;
+    }
   }
   return false;
 }
@@ -820,6 +838,13 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.multi_cut_candidates = std::clamp(limits.multi_cut_candidates, 0, 32);
   state.multi_cut_threshold = std::clamp(limits.multi_cut_threshold, 0, 32);
   state.multi_cut_prunes = 0;
+  const TimeBudget time_budget = compute_time_budget(limits, root.side_to_move());
+  state.hard_time_ms = time_budget.hard_ms;
+  state.soft_time_ms = std::min<std::int64_t>(time_budget.soft_ms, time_budget.hard_ms);
+  state.use_time = state.hard_time_ms > 0;
+  if (state.use_time) {
+    state.start_time = std::chrono::steady_clock::now();
+  }
   state.stop_flag = stop_flag;
 
   emit_search_trace_start(root, limits);
