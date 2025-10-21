@@ -24,7 +24,6 @@ constexpr int kQuietHistoryBonus = 128;
 constexpr int kNullMoveReduction = 2;
 constexpr Score kAspirationBase = 64;
 constexpr Score kAspirationScale = 16;
-
 struct SearchTables {
   SearchTables() : tt(kDefaultTTMegabytes) {}
 
@@ -76,6 +75,8 @@ struct SearchState {
   bool aborted{false};
   std::array<Move, kMaxMoves> root_excludes{};
   int root_exclude_count{0};
+  int lmr_min_depth{kLmrMinDepthDefault};
+  int lmr_min_move{kLmrMinMoveDefault};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -354,15 +355,51 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       continue;
     }
     const bool is_primary_move = (processed_moves == 0);
+    const Color moving_side = pos.side_to_move();
     Undo undo;
     pos.make(move, undo);
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
+    int reduction = 0;
+    const bool allow_lmr = !is_primary_move && !in_pv && !in_check && extension == 0;
+    if (allow_lmr && next_depth > 1 && depth >= state.lmr_min_depth &&
+        static_cast<int>(processed_moves) + 1 >= state.lmr_min_move && is_quiet_move(move)) {
+      const int move_order = static_cast<int>(processed_moves);
+      const int history_score = state.history.get(moving_side, move);
+      reduction = 1;
+      reduction += std::max(0, move_order - 2) / 3;
+      reduction += std::max(0, depth - 4) / 3;
+      if (history_score < 0) {
+        reduction += 1;
+      }
+      reduction = std::min(reduction, next_depth - 1);
+    }
+
+    const bool gives_check = pos.in_check(pos.side_to_move());
+    if (gives_check) {
+      reduction = 0;
+    }
+
+    int search_depth = next_depth;
+    const bool lmr_used = reduction > 0;
+    if (lmr_used) {
+      search_depth = std::max(1, next_depth - reduction);
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search lmr reduce"
+            << " ply=" << ply
+            << " move=" << move_to_uci(move)
+            << " depth=" << depth
+            << " reduction=" << reduction
+            << " reduced_depth=" << search_depth;
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+    }
     Score score = -kEvalInfinity;
     bool searched_full_window = false;
     if (is_primary_move) {
       PvTable* child_pv = in_pv ? pv_table : nullptr;
-      score = -negamax(pos, next_depth, -beta, -alpha, tables, state,
+      score = -negamax(pos, search_depth, -beta, -alpha, tables, state,
                        ply + 1, child_pv, false);
       searched_full_window = true;
     } else {
@@ -377,8 +414,12 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
             << " window=[" << null_window_beta << ',' << alpha << ']';
         trace_emit(TraceTopic::Search, oss.str());
       }
-      score = -negamax(pos, next_depth, -null_window_beta, -alpha, tables, state,
+      score = -negamax(pos, search_depth, -null_window_beta, -alpha, tables, state,
                        ply + 1, nullptr, false);
+      if (lmr_used && !state.aborted && score > alpha) {
+        score = -negamax(pos, next_depth, -null_window_beta, -alpha, tables, state,
+                         ply + 1, nullptr, false);
+      }
       if (!state.aborted && score > alpha && score < beta) {
         if (trace_search) {
           std::ostringstream oss;
@@ -597,6 +638,8 @@ SearchResult search(Position& root, const Limits& limits) {
   state.node_cap = limits.nodes;
   state.aborted = false;
   state.root_exclude_count = 0;
+  state.lmr_min_depth = std::max(1, limits.lmr_min_depth);
+  state.lmr_min_move = std::max(1, limits.lmr_min_move);
 
   emit_search_trace_start(root, limits);
 

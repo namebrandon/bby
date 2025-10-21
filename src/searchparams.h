@@ -6,6 +6,9 @@
 
 namespace bby {
 
+inline constexpr int kLmrMinDepthDefault = 4;
+inline constexpr int kLmrMinMoveDefault = 3;
+
 struct Limits {
   std::int64_t movetime_ms{-1};
   std::int64_t nodes{-1};
@@ -15,6 +18,8 @@ struct Limits {
   std::int64_t winc_ms{0};
   std::int64_t binc_ms{0};
   int multipv{1};
+  int lmr_min_depth{kLmrMinDepthDefault};
+  int lmr_min_move{kLmrMinMoveDefault};
   bool infinite{false};
 };
 

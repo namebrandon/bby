@@ -397,6 +397,8 @@ struct UciState {
   int hash_mb{128};
   int singular_margin{50};
   int multipv{1};
+  int lmr_min_depth{kLmrMinDepthDefault};
+  int lmr_min_move{kLmrMinMoveDefault};
   std::int64_t bench_nodes_limit{0};
   bool debug{false};
   InitState init;
@@ -423,6 +425,10 @@ void emit_options(const UciState& state) {
                              std::to_string(state.singular_margin));
   write_line(state.io, "option name MultiPV type spin default 1 min 1 max 32 value " +
                              std::to_string(state.multipv));
+  write_line(state.io, "option name LMR Minimum Depth type spin default 4 min 1 max 64 value " +
+                             std::to_string(state.lmr_min_depth));
+  write_line(state.io, "option name LMR Minimum Move type spin default 3 min 1 max 64 value " +
+                             std::to_string(state.lmr_min_move));
   write_line(state.io, "option name Bench Nodes Limit type spin default 0 min 0 max 10000000 value " +
                              std::to_string(state.bench_nodes_limit));
 }
@@ -560,6 +566,16 @@ void handle_setoption(UciState& state, std::string_view args) {
     if (auto parsed = parse_int(value)) {
       state.multipv = static_cast<int>(std::clamp<std::int64_t>(*parsed, 1, 32));
     }
+  } else if (name == "LMR Minimum Depth") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.lmr_min_depth = static_cast<int>(std::clamp<std::int64_t>(rounded, 1, 64));
+    }
+  } else if (name == "LMR Minimum Move") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.lmr_min_move = static_cast<int>(std::clamp<std::int64_t>(rounded, 1, 64));
+    }
   } else if (name == "Debug Log File") {
     send_info(state.io, "debug log unsupported");
   } else {
@@ -611,6 +627,8 @@ void handle_go(UciState& state, std::string_view args) {
   }
 
   limits.multipv = state.multipv;
+  limits.lmr_min_depth = state.lmr_min_depth;
+  limits.lmr_min_move = state.lmr_min_move;
 
   if (state.worker.is_busy()) {
     state.worker.request_stop();
@@ -771,6 +789,8 @@ void handle_bench(UciState& state, std::string_view args) {
     if (state.bench_nodes_limit > 0) {
       limits.nodes = state.bench_nodes_limit;
     }
+    limits.lmr_min_depth = state.lmr_min_depth;
+    limits.lmr_min_move = state.lmr_min_move;
     const auto start = std::chrono::steady_clock::now();
     const SearchResult result = search(pos, limits);
     const auto stop = std::chrono::steady_clock::now();

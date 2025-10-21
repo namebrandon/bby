@@ -187,4 +187,27 @@ TEST_CASE("Search returns multiple PV lines when MultiPV requested", "[search][m
   REQUIRE(result.lines[0].best != result.lines[1].best);
 }
 
+TEST_CASE("Search applies late move reductions on quiet moves", "[search][lmr]") {
+  std::vector<std::string> payloads;
+  g_trace_sink = &payloads;
+  set_trace_writer(&capture_trace);
+
+  set_trace_topic(TraceTopic::Search, true);
+  Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
+  Limits limits;
+  limits.depth = 3;
+
+  const auto result = search(pos, limits);
+  REQUIRE(result.depth >= 2);
+
+  const auto lmr_hit = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
+    return payload.find("lmr reduce") != std::string::npos;
+  });
+  REQUIRE(lmr_hit != payloads.end());
+
+  set_trace_topic(TraceTopic::Search, false);
+  set_trace_writer(nullptr);
+  g_trace_sink = nullptr;
+}
+
 }  // namespace bby::test
