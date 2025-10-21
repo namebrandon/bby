@@ -6,6 +6,7 @@ add_executable(bby-unit
   unit/hash_tests.cpp
   unit/moveorder_tests.cpp
   unit/debug_tests.cpp
+  unit/qsearch_probe_tests.cpp
   unit/search_tests.cpp
   unit/uci_tests.cpp
   unit/epd_tests.cpp

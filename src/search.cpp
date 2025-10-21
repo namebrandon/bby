@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "debug.h"
+#include "qsearch_probe.h"
 
 namespace bby {
 namespace {
@@ -22,79 +23,46 @@ constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
 constexpr int kNullMoveReduction = 2;
 
-bool is_passed_pawn(const Position& pos, Color side, Square sq) {
-  const Bitboard opponent_pawns = pos.pieces(flip(side), PieceType::Pawn);
-  const int file = static_cast<int>(file_of(sq));
-  const int rank = static_cast<int>(rank_of(sq));
-  if (side == Color::White) {
-    for (int r = rank + 1; r <= static_cast<int>(Rank::R8); ++r) {
-      for (int df = -1; df <= 1; ++df) {
-        const int f = file + df;
-        if (f < 0 || f > 7) {
-          continue;
-        }
-        const Square target = static_cast<Square>(r * 8 + f);
-        if (opponent_pawns & bit(target)) {
-          return false;
-        }
-      }
-    }
-    return true;
-  }
-  for (int r = rank - 1; r >= static_cast<int>(Rank::R1); --r) {
-    for (int df = -1; df <= 1; ++df) {
-      const int f = file + df;
-      if (f < 0 || f > 7) {
-        continue;
-      }
-      const Square target = static_cast<Square>(r * 8 + f);
-      if (opponent_pawns & bit(target)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
-bool has_connected_passers(const Position& pos, Color side) {
-  Bitboard pawns = pos.pieces(side, PieceType::Pawn);
-  std::vector<Square> passed;
-  while (pawns) {
-    const int sq_idx = static_cast<int>(std::countr_zero(pawns));
-    pawns &= pawns - 1;
-    const Square sq = static_cast<Square>(sq_idx);
-    if (is_passed_pawn(pos, side, sq)) {
-      passed.push_back(sq);
-    }
-  }
-  const std::size_t n = passed.size();
-  if (n < 2) {
-    return false;
-  }
-  for (std::size_t i = 0; i < n; ++i) {
-    const int file_i = static_cast<int>(file_of(passed[i]));
-    const int rank_i = static_cast<int>(rank_of(passed[i]));
-    for (std::size_t j = i + 1; j < n; ++j) {
-      const int file_j = static_cast<int>(file_of(passed[j]));
-      const int rank_j = static_cast<int>(rank_of(passed[j]));
-      if (std::abs(file_i - file_j) == 1 && std::abs(rank_i - rank_j) <= 1) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-struct PVLine {
-  std::array<Move, kMaxPly> moves{};
-  int length{0};
-};
-
 struct SearchTables {
   SearchTables() : tt(kDefaultTTMegabytes) {}
 
   TT tt;
   std::uint8_t generation{0};
+};
+
+struct PvTable {
+  std::array<std::array<Move, kMaxPly>, kMaxPly> moves{};
+  std::array<int, kMaxPly> length{};
+
+  void clear() {
+    length.fill(0);
+  }
+
+  void reset_row(int ply) {
+    if (ply >= 0 && ply < kMaxPly) {
+      length[ply] = 0;
+    }
+  }
+
+  void set(int ply, Move move) {
+    BBY_ASSERT(ply >= 0 && ply < kMaxPly);
+    moves[ply][ply] = move;
+    const int child_ply = ply + 1;
+    const int child_length = (child_ply < kMaxPly) ? length[child_ply] : 0;
+    for (int idx = 0; idx < child_length; ++idx) {
+      moves[ply][ply + 1 + idx] = moves[child_ply][child_ply + idx];
+    }
+    length[ply] = child_length + 1;
+  }
+
+  void extract(int ply, std::vector<Move>& out) const {
+    if (ply < 0 || ply >= kMaxPly) {
+      out.clear();
+      return;
+    }
+    const int count = std::clamp(length[ply], 0, kMaxPly - ply);
+    out.assign(moves[ply].begin() + ply, moves[ply].begin() + ply + count);
+  }
 };
 
 struct SearchState {
@@ -199,16 +167,10 @@ void emit_search_trace_finish(const SearchResult& result) {
   trace_emit(TraceTopic::Search, oss.str());
 }
 
-void set_pv(PVLine& dst, Move move, const PVLine& child) {
-  dst.moves[0] = move;
-  std::copy(child.moves.begin(), child.moves.begin() + child.length, dst.moves.begin() + 1);
-  dst.length = child.length + 1;
-}
-
 Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply);
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
-              SearchState& state, int ply, PVLine& pv, bool previous_null);
+              SearchState& state, int ply, PvTable* pv_table, bool previous_null);
 
 bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
                             int depth, const TTEntry& tt_entry,
@@ -254,7 +216,6 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
   const auto history_snapshot = state.history;
   const auto killers_snapshot = state.killers;
 
-  PVLine dummy{};
   for (std::size_t idx = 0; idx < moves.size(); ++idx) {
     const Move move = moves[idx];
     if (move == tt_move) {
@@ -263,7 +224,8 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
     Undo undo;
     pos.make(move, undo);
     const Score score =
-        -negamax(pos, reduced_depth, -singular_beta, -singular_alpha, tables, state, ply + 1, dummy, previous_null);
+        -negamax(pos, reduced_depth, -singular_beta, -singular_alpha, tables, state,
+                 ply + 1, nullptr, previous_null);
     pos.unmake(move, undo);
     if (score >= singular_beta) {
       state.history = history_snapshot;
@@ -277,13 +239,15 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
 }
 
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
-              SearchState& state, int ply, PVLine& pv, bool previous_null) {
+              SearchState& state, int ply, PvTable* pv_table, bool previous_null) {
   state.nodes++;
   if (state.node_cap >= 0 && state.nodes > state.node_cap) {
     state.aborted = true;
     return alpha;
   }
-  pv.length = 0;
+  if (pv_table != nullptr) {
+    pv_table->reset_row(ply);
+  }
 
   if (ply >= kMaxPly - 1) {
     return evaluate(pos);
@@ -315,10 +279,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       has_sufficient_material_for_null(pos)) {
     Undo null_undo;
     pos.make_null(null_undo);
-    PVLine null_pv{};
     const Score null_score = -negamax(pos, depth - 1 - kNullMoveReduction,
                                       -beta, -beta + 1, tables, state, ply + 1,
-                                      null_pv, true);
+                                      nullptr, true);
     pos.unmake_null(null_undo);
     if (state.aborted) {
       return beta;
@@ -357,7 +320,6 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
   Move best_move{};
   Score best_score = -kEvalInfinity;
-  PVLine child_pv{};
 
   const std::size_t move_count = moves.size();
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
@@ -367,13 +329,16 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     pos.make(move, undo);
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
-    const Score score = -negamax(pos, next_depth, -beta, -alpha, tables, state, ply + 1, child_pv, false);
+    const Score score = -negamax(pos, next_depth, -beta, -alpha, tables, state,
+                                 ply + 1, pv_table, false);
     pos.unmake(move, undo);
 
     if (score > best_score) {
       best_score = score;
       best_move = move;
-      set_pv(pv, move, child_pv);
+      if (pv_table != nullptr) {
+        pv_table->set(ply, move);
+      }
     }
 
     if (score > alpha) {
@@ -385,17 +350,20 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     }
 
     if (alpha >= beta) {
-      if (is_quiet_move(move)) {
-        update_killers(state, ply, move);
-        const int bonus = kQuietHistoryBonus * depth * depth;
-        update_history(state, pos.side_to_move(), move, bonus);
-      }
+    if (is_quiet_move(move)) {
+      update_killers(state, ply, move);
+      const int bonus = kQuietHistoryBonus * depth * depth;
+      update_history(state, pos.side_to_move(), move, bonus);
+    }
       break;
     }
   }
 
   if (best_score == -kEvalInfinity) {
     best_score = evaluate(pos);
+    if (pv_table != nullptr) {
+      pv_table->reset_row(ply);
+    }
   }
 
   BoundType bound = BoundType::Exact;
@@ -457,6 +425,18 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
   }
 
   const Score stand_pat = evaluate(pos);
+  const bool trace_q = trace_enabled(TraceTopic::QSearch);
+  if (trace_q) {
+    std::ostringstream oss;
+    oss << "trace qsearch node"
+        << " ply=" << ply
+        << " stm=" << (pos.side_to_move() == Color::White ? 'w' : 'b')
+        << " stand_pat=" << stand_pat
+        << " alpha=" << alpha
+        << " beta=" << beta
+        << " fen=\"" << pos.to_fen() << '"';
+    trace_emit(TraceTopic::QSearch, oss.str());
+  }
   if (stand_pat >= beta) {
     return stand_pat;
   }
@@ -483,18 +463,35 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
   score_moves(moves, ordering, move_scores);
 
   const std::size_t move_count = moves.size();
-  constexpr int kDeltaMargin = 150;
+  constexpr int kDeltaMargin = 210;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
     const int margin = capture_margin(pos, move);
-    if (stand_pat + margin + kDeltaMargin < alpha) {
+    const bool delta_pruned =
+        stand_pat + margin + kDeltaMargin < alpha;
+    qsearch_delta_prune_probe(pos, move, stand_pat, alpha, margin, kDeltaMargin, ply,
+                              delta_pruned);
+    if (trace_q) {
+      std::ostringstream oss;
+      oss << "trace qsearch candidate"
+          << " ply=" << ply
+          << " move=" << move_to_uci(move)
+          << " margin=" << margin
+          << " delta=" << kDeltaMargin
+          << " threshold=" << (stand_pat + margin + kDeltaMargin)
+          << " alpha=" << alpha
+          << " pruned=" << (delta_pruned ? 1 : 0);
+      trace_emit(TraceTopic::QSearch, oss.str());
+    }
+    if (delta_pruned) {
       continue;
     }
     Undo undo;
     pos.make(move, undo);
     const Score score = -qsearch(pos, -beta, -alpha, tables, state, ply + 1);
     pos.unmake(move, undo);
+    const Score alpha_before = alpha;
     if (score > best) {
       best = score;
     }
@@ -506,6 +503,18 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
     }
     if (alpha >= beta) {
       break;
+    }
+    if (trace_q) {
+      std::ostringstream oss;
+      oss << "trace qsearch result"
+          << " ply=" << ply
+          << " move=" << move_to_uci(move)
+          << " score=" << score
+          << " best=" << best
+          << " alpha_before=" << alpha_before
+          << " alpha_after=" << alpha
+          << " beta=" << beta;
+      trace_emit(TraceTopic::QSearch, oss.str());
     }
   }
 
@@ -529,27 +538,28 @@ SearchResult search(Position& root, const Limits& limits) {
   result.best = Move{};
   result.eval = 0;
 
-  PVLine pv{};
-  PVLine iteration_pv{};
+  PvTable pv_table{};
+  pv_table.clear();
+  std::vector<Move> root_line;
 
   for (int current_depth = 1; current_depth <= max_depth; ++current_depth) {
     ++tables.generation;
     tables.tt.set_generation(tables.generation);
 
     result.depth = current_depth;
-    iteration_pv = PVLine{};
+    pv_table.clear();
     const Score score = negamax(root, current_depth, -kEvalInfinity, kEvalInfinity,
-                                tables, state, 0, iteration_pv, false);
+                                tables, state, 0, &pv_table, false);
     result.eval = score;
     result.nodes = state.nodes;
     if (state.aborted) {
       break;
     }
 
-    if (iteration_pv.length > 0) {
-      pv = iteration_pv;
-      result.best = iteration_pv.moves[0];
-      result.pv.line.assign(iteration_pv.moves.begin(), iteration_pv.moves.begin() + iteration_pv.length);
+    pv_table.extract(0, root_line);
+    if (!root_line.empty()) {
+      result.best = root_line.front();
+      result.pv.line = root_line;
     }
   }
 
