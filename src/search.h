@@ -2,6 +2,7 @@
 // search.h -- Principal variation search driver and shared search result struct.
 // Provides the public entry point used by the UCI front-end and tools.
 
+#include <atomic>
 #include <vector>
 
 #include "board.h"
@@ -39,7 +40,8 @@ struct SearchResult {
   bool aborted{false};
 };
 
-SearchResult search(Position& root, const Limits& limits);
+SearchResult search(Position& root, const Limits& limits,
+                    std::atomic<bool>* stop_flag = nullptr);
 void set_singular_margin(int margin);
 int singular_margin();
 

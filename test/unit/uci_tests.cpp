@@ -54,4 +54,22 @@ TEST_CASE("repropack emits deterministic metadata", "[uci][repro]") {
   REQUIRE(repro->find("fen=") != std::string::npos);
 }
 
+TEST_CASE("Stop returns current best move", "[uci][stop]") {
+  std::vector<std::string> lines;
+  g_output_sink = &lines;
+  set_uci_writer(&capture_output);
+
+  const std::string script = "uci\nisready\nposition startpos\ngo depth 4\nstop\n";
+  uci_fuzz_feed(script);
+
+  set_uci_writer(nullptr);
+  g_output_sink = nullptr;
+
+  const auto best = std::find_if(lines.begin(), lines.end(), [](const std::string& line) {
+    return line.rfind("bestmove", 0) == 0;
+  });
+  REQUIRE(best != lines.end());
+  REQUIRE(*best != std::string("bestmove 0000"));
+}
+
 }  // namespace bby::test

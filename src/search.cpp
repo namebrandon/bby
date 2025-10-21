@@ -92,6 +92,7 @@ struct SearchState {
   int multi_cut_candidates{8};
   int multi_cut_threshold{3};
   int multi_cut_prunes{0};
+  std::atomic<bool>* stop_flag{nullptr};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -275,11 +276,22 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
   return true;
 }
 
+bool should_abort(SearchState& state) {
+  if (state.stop_flag != nullptr && state.stop_flag->load(std::memory_order_acquire)) {
+    state.aborted = true;
+    return true;
+  }
+  return false;
+}
+
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply, PvTable* pv_table, bool previous_null) {
   state.nodes++;
   if (state.node_cap >= 0 && state.nodes > state.node_cap) {
     state.aborted = true;
+    return alpha;
+  }
+  if (should_abort(state)) {
     return alpha;
   }
   const bool in_pv = (pv_table != nullptr);
@@ -434,6 +446,11 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
         const auto killers_snapshot = state.killers;
         int cut_count = 0;
         for (int idx = 0; idx < candidates; ++idx) {
+          if (should_abort(state)) {
+            state.history = history_snapshot;
+            state.killers = killers_snapshot;
+            return beta;
+          }
           const Move move = moves[order[static_cast<std::size_t>(idx)]];
           if (is_root_excluded(state, move, ply)) {
             continue;
@@ -484,6 +501,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   const std::size_t move_count = moves.size();
   std::size_t processed_moves = 0;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
+    if (should_abort(state)) {
+      break;
+    }
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
     if (is_root_excluded(state, move, ply)) {
@@ -575,6 +595,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     pos.unmake(move, undo);
     ++processed_moves;
 
+    if (state.aborted) {
+      break;
+    }
+
     if (score > best_score) {
       best_score = score;
       best_move = move;
@@ -639,6 +663,9 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
   state.nodes++;
   if (state.node_cap >= 0 && state.nodes > state.node_cap) {
     state.aborted = true;
+    return alpha;
+  }
+  if (should_abort(state)) {
     return alpha;
   }
   const bool in_check = pos.in_check(pos.side_to_move());
@@ -769,7 +796,7 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
 
 }  // namespace
 
-SearchResult search(Position& root, const Limits& limits) {
+SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* stop_flag) {
   SearchTables tables;
   SearchState state;
   state.see_cache.clear();
@@ -793,6 +820,7 @@ SearchResult search(Position& root, const Limits& limits) {
   state.multi_cut_candidates = std::clamp(limits.multi_cut_candidates, 0, 32);
   state.multi_cut_threshold = std::clamp(limits.multi_cut_threshold, 0, 32);
   state.multi_cut_prunes = 0;
+  state.stop_flag = stop_flag;
 
   emit_search_trace_start(root, limits);
 
@@ -804,6 +832,8 @@ SearchResult search(Position& root, const Limits& limits) {
   result.best = Move{};
   result.eval = 0;
   result.lines.clear();
+  SearchResult last_completed = result;
+  bool have_completed = false;
 
   PvTable pv_table{};
   pv_table.clear();
@@ -858,6 +888,10 @@ SearchResult search(Position& root, const Limits& limits) {
       while (true) {
         pv_table.clear();
         ++attempt;
+        if (should_abort(state)) {
+          aborted_depth = true;
+          break;
+        }
         if (trace_search_enabled && use_aspiration) {
           std::ostringstream oss;
           oss << "aspiration attempt depth=" << current_depth
@@ -869,6 +903,10 @@ SearchResult search(Position& root, const Limits& limits) {
         }
 
         score = negamax(root, current_depth, alpha, beta, tables, state, 0, &pv_table, false);
+        if (state.aborted) {
+          aborted_depth = true;
+          break;
+        }
         if (state.aborted) {
           aborted_depth = true;
           break;
@@ -971,11 +1009,17 @@ SearchResult search(Position& root, const Limits& limits) {
       result.best = primary.best;
       result.pv = primary.pv;
       result.eval = primary.eval;
+      last_completed = result;
+      have_completed = true;
     }
 
     if (state.aborted || aborted_depth) {
       break;
     }
+  }
+
+  if (state.aborted && have_completed) {
+    result = last_completed;
   }
 
   result.nodes = state.nodes;

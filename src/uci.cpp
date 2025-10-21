@@ -323,7 +323,7 @@ class SearchWorker {
 
           Position local = cmd.position;
           Limits limits = cmd.limits;
-          SearchResult result = search(local, limits);
+          SearchResult result = search(local, limits, &stop_flag_);
 
           const bool stopped = stop_flag_.load(std::memory_order_acquire);
           {
@@ -358,10 +358,12 @@ class SearchWorker {
             }
           }
 
-          if (stopped) {
+          const bool have_move = !result.best.is_null();
+          if (!have_move && stopped) {
             write_line(*io_, "bestmove 0000");
           } else {
-            write_line(*io_, "bestmove " + format_move(result.best));
+            const Move best = have_move ? result.best : Move{};
+            write_line(*io_, std::string("bestmove ") + format_move(best));
           }
 
           busy_.store(false, std::memory_order_release);
