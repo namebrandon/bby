@@ -333,6 +333,7 @@ class SearchWorker {
               std::ostringstream info;
               info << "info multipv " << (idx + 1)
                    << " depth " << partial.depth
+                   << " seldepth " << partial.seldepth
                    << " nodes " << partial.nodes;
               if (partial.elapsed_ms > 0) {
                 const std::uint64_t nps = static_cast<std::uint64_t>(
@@ -341,18 +342,29 @@ class SearchWorker {
                 info << " time " << partial.elapsed_ms
                      << " nps " << nps;
               }
+              info << " hashfull " << partial.hashfull;
               append_score_info(info, line.eval);
               if (!line.pv.line.empty()) {
                 info << " pv";
                 for (const Move move : line.pv.line) {
                   info << ' ' << format_move(move);
                 }
-              }
-              write_line(*io_, info.str());
-            }
-          };
+          }
+          write_line(*io_, info.str());
+        }
+      };
 
-          SearchResult result = search(local, limits, &stop_flag_, &progress);
+      CurrmoveFn currmove = [this](Move move, int number) {
+        if (io_ == nullptr) {
+          return;
+        }
+        std::ostringstream info;
+        info << "info currmove " << format_move(move)
+             << " currmovenumber " << number;
+        write_line(*io_, info.str());
+      };
+
+      SearchResult result = search(local, limits, &stop_flag_, &progress, &currmove);
 
           const bool stopped = stop_flag_.load(std::memory_order_acquire);
           {
@@ -375,6 +387,7 @@ class SearchWorker {
               std::ostringstream info;
               info << "info multipv " << (idx + 1)
                    << " depth " << result.depth
+                   << " seldepth " << result.seldepth
                    << " nodes " << result.nodes;
               if (result.elapsed_ms > 0) {
                 info << " time " << result.elapsed_ms;
@@ -383,6 +396,7 @@ class SearchWorker {
                     std::max<std::int64_t>(result.elapsed_ms, 1));
                 info << " nps " << nps;
               }
+              info << " hashfull " << result.hashfull;
               append_score_info(info, line.eval);
               if (!line.pv.line.empty()) {
                 info << " pv";

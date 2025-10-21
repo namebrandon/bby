@@ -104,10 +104,14 @@ void TT::store(std::uint64_t key, const TTEntry& in) {
   }
 
   TTEntry& dest = entries_[base + target];
+  const bool was_empty = dest.key == 0ULL;
   const bool replacing = dest.key != 0ULL && dest.key != key;
   dest = in;
   dest.key = key;
   dest.generation = generation_;
+  if (was_empty && dest.key != 0ULL) {
+    ++used_slots_;
+  }
 
   if (trace_enabled(TraceTopic::TT)) {
     std::ostringstream oss;
@@ -121,5 +125,14 @@ void TT::store(std::uint64_t key, const TTEntry& in) {
   }
 }
 
-}  // namespace bby
+int TT::hashfull() const {
+  if (entries_.empty()) {
+    return 0;
+  }
+  const std::size_t cap = entries_.size();
+  const std::size_t filled = std::min(used_slots_, cap);
+  const std::size_t scaled = (filled * 1000ULL + cap / 2) / cap;
+  return static_cast<int>(std::min<std::size_t>(1000, scaled));
+}
 
+}  // namespace bby

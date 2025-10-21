@@ -99,6 +99,8 @@ struct SearchState {
   std::int64_t hard_time_ms{0};
   bool use_time{false};
   const SearchProgressFn* progress{nullptr};
+  const CurrmoveFn* currmove{nullptr};
+  int seldepth{0};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -310,6 +312,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     state.aborted = true;
     return alpha;
   }
+  state.seldepth = std::max(state.seldepth, ply + 1);
   if (should_abort(state)) {
     return alpha;
   }
@@ -528,6 +531,10 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     if (is_root_excluded(state, move, ply)) {
       continue;
     }
+    if (ply == 0 && state.currmove != nullptr) {
+      const int move_number = static_cast<int>(processed_moves) + 1;
+      (*state.currmove)(move, move_number);
+    }
     const bool is_primary_move = (processed_moves == 0);
     const Color moving_side = pos.side_to_move();
     Undo undo;
@@ -684,6 +691,7 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
     state.aborted = true;
     return alpha;
   }
+  state.seldepth = std::max(state.seldepth, ply + 1);
   if (should_abort(state)) {
     return alpha;
   }
@@ -816,7 +824,7 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
 }  // namespace
 
 SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* stop_flag,
-                    const SearchProgressFn* progress) {
+                    const SearchProgressFn* progress, const CurrmoveFn* currmove) {
   SearchTables tables;
   SearchState state;
   state.see_cache.clear();
@@ -850,6 +858,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   }
   state.stop_flag = stop_flag;
   state.progress = progress;
+  state.currmove = currmove;
 
   emit_search_trace_start(root, limits);
 
@@ -1047,6 +1056,8 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
       result.best = primary.best;
       result.pv = primary.pv;
       result.eval = primary.eval;
+      result.seldepth = state.seldepth;
+      result.hashfull = tables.tt.hashfull();
       last_completed = result;
       have_completed = true;
       if (state.progress != nullptr) {
@@ -1080,6 +1091,38 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
                               finish_time - state.start_time)
                               .count();
   result.elapsed_ms = elapsed_ms;
+  result.seldepth = state.seldepth;
+  result.hashfull = tables.tt.hashfull();
+
+  if (result.best.is_null()) {
+    MoveList fallback_moves;
+    root.generate_moves(fallback_moves, GenStage::All);
+    for (const Move move : fallback_moves) {
+      Undo undo;
+      root.make(move, undo);
+      const bool legal = !root.in_check(root.side_to_move());
+      root.unmake(move, undo);
+      if (legal) {
+        result.best = move;
+        result.pv.line.clear();
+        result.pv.line.push_back(move);
+        if (result.lines.empty()) {
+          PVLine line;
+          line.best = move;
+          line.pv.line = result.pv.line;
+          line.eval = result.eval;
+          result.lines.push_back(line);
+        } else {
+          result.lines.front().best = move;
+          if (result.lines.front().pv.line.empty()) {
+            result.lines.front().pv.line = result.pv.line;
+          }
+        }
+        break;
+      }
+    }
+  }
+
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
   if (result.best.is_null() && !root_entry.best_move.is_null()) {

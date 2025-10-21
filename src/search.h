@@ -30,12 +30,14 @@ struct SearchResult {
   PV pv;
   std::vector<PVLine> lines;
   int depth{0};
+  int seldepth{0};
   std::int64_t nodes{0};
   Score eval{0};
   int static_futility_prunes{0};
   int razor_prunes{0};
   int multi_cut_prunes{0};
   std::int64_t elapsed_ms{0};
+  int hashfull{0};
   bool tt_hit{false};
   Move primary_killer{};
   int history_bonus{0};
@@ -43,10 +45,12 @@ struct SearchResult {
 };
 
 using SearchProgressFn = std::function<void(const SearchResult&)>;
+using CurrmoveFn = std::function<void(Move, int)>;
 
 SearchResult search(Position& root, const Limits& limits,
                     std::atomic<bool>* stop_flag = nullptr,
-                    const SearchProgressFn* progress = nullptr);
+                    const SearchProgressFn* progress = nullptr,
+                    const CurrmoveFn* currmove = nullptr);
 void set_singular_margin(int margin);
 int singular_margin();
 

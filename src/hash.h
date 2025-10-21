@@ -31,6 +31,7 @@ public:
   void set_generation(std::uint8_t gen);
   bool probe(std::uint64_t key, TTEntry& out) const;
   void store(std::uint64_t key, const TTEntry& in);
+  int hashfull() const;
 
 private:
   [[nodiscard]] std::size_t bucket_index(std::uint64_t key) const;
@@ -38,6 +39,7 @@ private:
   std::size_t bucket_count_{1};
   std::vector<TTEntry> entries_;
   std::uint8_t generation_{0};
+  std::size_t used_slots_{0};
 };
 
 }  // namespace bby
