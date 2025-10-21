@@ -446,6 +446,7 @@ struct UciState {
   mutable UciIo io{};
   SearchWorker worker{};
   Position pos{Position::from_fen(kStartPositionFen, false)};
+  Limits last_limits{};
   int threads{1};
   int hash_mb{128};
   int singular_margin{50};
@@ -466,6 +467,8 @@ struct UciState {
   int multi_cut_candidates{8};
   int multi_cut_threshold{3};
   InitState init;
+  bool have_last_limits{false};
+  bool analysis_auto_restart{false};
 
   explicit UciState(const InitState& init_state)
       : init(init_state) {
@@ -536,7 +539,8 @@ void handle_ponderhit(UciState& state) {
 }
 
 void handle_position(UciState& state, std::string_view args) {
-  if (state.worker.is_busy()) {
+  const bool was_busy = state.worker.is_busy();
+  if (was_busy) {
     state.worker.request_stop();
     state.worker.wait_idle();
   }
@@ -585,6 +589,7 @@ void handle_position(UciState& state, std::string_view args) {
     token = consume_token(view);
   }
 
+  bool applied_all_moves = true;
   if (token == "moves") {
     while (true) {
       const std::string move_token = consume_token(view);
@@ -594,11 +599,33 @@ void handle_position(UciState& state, std::string_view args) {
       const Move mv = find_uci_move(state.pos, move_token);
       if (mv.is_null()) {
         send_info(state.io, "illegal move '" + move_token + "'");
+        applied_all_moves = false;
         break;
       }
       Undo undo;
       state.pos.make(mv, undo);
     }
+  }
+
+  if (state.analysis_auto_restart && state.have_last_limits && applied_all_moves &&
+      was_busy) {
+    Limits limits = state.last_limits;
+    limits.multipv = state.multipv;
+    limits.lmr_min_depth = state.lmr_min_depth;
+    limits.lmr_min_move = state.lmr_min_move;
+    limits.enable_static_futility = state.enable_static_futility;
+    limits.static_futility_margin = state.static_futility_margin;
+    limits.static_futility_depth = state.static_futility_depth;
+    limits.enable_razoring = state.enable_razoring;
+    limits.razor_margin = state.razor_margin;
+    limits.razor_depth = state.razor_depth;
+    limits.enable_multi_cut = state.enable_multi_cut;
+    limits.multi_cut_min_depth = state.multi_cut_min_depth;
+    limits.multi_cut_reduction = state.multi_cut_reduction;
+    limits.multi_cut_candidates = state.multi_cut_candidates;
+    limits.multi_cut_threshold = state.multi_cut_threshold;
+    state.last_limits = limits;
+    state.worker.start_search(state.pos, limits);
   }
 }
 
@@ -818,6 +845,10 @@ void handle_go(UciState& state, std::string_view args) {
   limits.multi_cut_candidates = state.multi_cut_candidates;
   limits.multi_cut_threshold = state.multi_cut_threshold;
 
+  state.last_limits = limits;
+  state.have_last_limits = true;
+  state.analysis_auto_restart = limits.infinite;
+
   if (state.worker.is_busy()) {
     state.worker.request_stop();
     state.worker.wait_idle();
@@ -837,6 +868,8 @@ void handle_debug(UciState& state, std::string_view args) {
 
 void handle_ucinewgame(UciState& state) {
   state.pos = Position::from_fen(kStartPositionFen, false);
+  state.have_last_limits = false;
+  state.analysis_auto_restart = false;
 }
 
 void handle_trace(UciState& state, std::string_view args) {
@@ -1072,6 +1105,7 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
   } else if (command == "stop") {
     state.worker.request_stop();
     send_info(state.io, "stop acknowledged");
+    state.analysis_auto_restart = false;
   } else if (command == "ponderhit") {
     handle_ponderhit(state);
   } else if (command == "register") {
