@@ -261,6 +261,7 @@ class SearchWorker {
   }
 
   void request_stop() {
+    stop_flag_.store(true, std::memory_order_release);
     if (!busy_.load(std::memory_order_acquire)) {
       return;
     }
