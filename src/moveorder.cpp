@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <utility>
 
 #include "common.h"
@@ -20,6 +21,7 @@ constexpr int kKillerPrimary = 80'000;
 constexpr int kKillerSecondary = 60'000;
 constexpr int kBadCapturePenalty = 40'000;
 constexpr int kHistoryScale = 2;
+constexpr int kSeeMarginTrigger = 200;
 
 constexpr std::array<PieceType, 6> kSeeOrder = {
     PieceType::Pawn, PieceType::Knight, PieceType::Bishop,
@@ -202,26 +204,36 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
       const Piece attacker = pos.piece_on(from_square(move));
       const int victim_value = material(victim);
       const int attacker_value = material(attacker);
-      const int mvv_lva =
-          victim_value * 16 - attacker_value;  // MVV-LVA emphasis
+      const int mvv_lva = victim_value * 16 - attacker_value;  // MVV-LVA emphasis
       score += kCaptureBase + mvv_lva;
+
+      const int margin = material(victim) - attacker_value;
       const bool needs_see =
           promotion_type(move) != PieceType::None || flag == MoveFlag::EnPassant ||
           attacker_value >= victim_value;
-      int see_value = 0;
-      const int margin = material(victim) - attacker_value;
       const bool guaranteed_win = margin >= 300;
+
+      int see_value = margin;
       bool have_see = false;
       if (guaranteed_win) {
-        see_value = margin;
         have_see = true;
-      } else if (force_see || needs_see) {
-        see_value = cached_see(pos, move, ctx.see_cache);
-        have_see = true;
+      } else {
+        const bool near_margin = std::abs(margin) < kSeeMarginTrigger;
+        if (force_see || (needs_see && near_margin)) {
+          see_value = cached_see(pos, move, ctx.see_cache);
+          have_see = true;
+        } else if (margin < 0) {
+          have_see = true;
+        }
       }
-      if (!guaranteed_win && needs_see && have_see && see_value < 0) {
-        score -= kBadCapturePenalty;
+
+      if (!guaranteed_win && needs_see) {
+        const bool losing = have_see ? (see_value < 0) : (margin < 0);
+        if (losing) {
+          score -= kBadCapturePenalty;
+        }
       }
+
       if (see_results != nullptr) {
         (*see_results)[idx] = have_see ? see_value : kSeeUnknown;
       }

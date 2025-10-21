@@ -33,7 +33,14 @@ TimeBudget compute_time_budget(const Limits& limits, Color stm) {
   const std::int64_t increment =
       (stm == Color::White) ? limits.winc_ms : limits.binc_ms;
 
-  if (time_left <= 0) {
+  const bool have_clock = time_left >= 0;
+  const bool have_increment = increment > 0;
+
+  if (!have_clock && !have_increment) {
+    return budget;
+  }
+
+  if (!have_clock) {
     if (increment > 0) {
       const std::int64_t alloc =
           std::max<std::int64_t>(increment / 2, kMinMoveTimeMs);
@@ -41,8 +48,6 @@ TimeBudget compute_time_budget(const Limits& limits, Color stm) {
       budget.hard_ms = alloc + kHardSlackMs;
       return budget;
     }
-    budget.soft_ms = kDefaultMoveTimeMs;
-    budget.hard_ms = kDefaultMoveTimeMs + kHardSlackMs;
     return budget;
   }
 
