@@ -3,6 +3,7 @@
 // Provides the public entry point used by the UCI front-end and tools.
 
 #include <atomic>
+#include <functional>
 #include <vector>
 
 #include "board.h"
@@ -41,8 +42,11 @@ struct SearchResult {
   bool aborted{false};
 };
 
+using SearchProgressFn = std::function<void(const SearchResult&)>;
+
 SearchResult search(Position& root, const Limits& limits,
-                    std::atomic<bool>* stop_flag = nullptr);
+                    std::atomic<bool>* stop_flag = nullptr,
+                    const SearchProgressFn* progress = nullptr);
 void set_singular_margin(int margin);
 int singular_margin();
 

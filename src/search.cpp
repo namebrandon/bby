@@ -98,6 +98,7 @@ struct SearchState {
   std::int64_t soft_time_ms{0};
   std::int64_t hard_time_ms{0};
   bool use_time{false};
+  const SearchProgressFn* progress{nullptr};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -814,7 +815,8 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
 
 }  // namespace
 
-SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* stop_flag) {
+SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* stop_flag,
+                    const SearchProgressFn* progress) {
   SearchTables tables;
   SearchState state;
   state.see_cache.clear();
@@ -847,6 +849,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
     state.soft_time_ms = 0;
   }
   state.stop_flag = stop_flag;
+  state.progress = progress;
 
   emit_search_trace_start(root, limits);
 
@@ -1037,6 +1040,13 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
       result.eval = primary.eval;
       last_completed = result;
       have_completed = true;
+      if (state.progress != nullptr) {
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - state.start_time)
+                            .count();
+        result.elapsed_ms = now;
+        (*state.progress)(result);
+      }
     }
 
     if (state.aborted || aborted_depth) {

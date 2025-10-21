@@ -10,5 +10,7 @@ using UciWriter = void (*)(std::string_view line);
 
 int uci_main();
 void set_uci_writer(UciWriter writer);
+std::string_view engine_name();
+std::string_view engine_author();
 
 }  // namespace bby

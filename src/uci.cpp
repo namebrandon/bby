@@ -323,7 +323,35 @@ class SearchWorker {
 
           Position local = cmd.position;
           Limits limits = cmd.limits;
-          SearchResult result = search(local, limits, &stop_flag_);
+          SearchProgressFn progress = [this](const SearchResult& partial) {
+            if (io_ == nullptr || partial.lines.empty()) {
+              return;
+            }
+            for (std::size_t idx = 0; idx < partial.lines.size(); ++idx) {
+              const auto& line = partial.lines[idx];
+              std::ostringstream info;
+              info << "info multipv " << (idx + 1)
+                   << " depth " << partial.depth
+                   << " nodes " << partial.nodes;
+              if (partial.elapsed_ms > 0) {
+                const std::uint64_t nps = static_cast<std::uint64_t>(
+                    (partial.nodes * 1000ULL) /
+                    std::max<std::int64_t>(partial.elapsed_ms, 1));
+                info << " time " << partial.elapsed_ms
+                     << " nps " << nps;
+              }
+              append_score_info(info, line.eval);
+              if (!line.pv.line.empty()) {
+                info << " pv";
+                for (const Move move : line.pv.line) {
+                  info << ' ' << format_move(move);
+                }
+              }
+              write_line(*io_, info.str());
+            }
+          };
+
+          SearchResult result = search(local, limits, &stop_flag_, &progress);
 
           const bool stopped = stop_flag_.load(std::memory_order_acquire);
           {
@@ -1057,6 +1085,14 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
 }
 
 }  // namespace
+
+std::string_view engine_name() {
+  return kEngineName;
+}
+
+std::string_view engine_author() {
+  return kEngineAuthor;
+}
 
 void set_uci_writer(UciWriter writer) {
   thread_local_writer() = writer;
