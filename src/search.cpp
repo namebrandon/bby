@@ -85,14 +85,6 @@ bool has_connected_passers(const Position& pos, Color side) {
   return false;
 }
 
-bool creates_connected_passers(Position& pos, Move move, Color side) {
-  Undo undo;
-  pos.make(move, undo);
-  const bool result = has_connected_passers(pos, side);
-  pos.unmake(move, undo);
-  return result;
-}
-
 struct PVLine {
   std::array<Move, kMaxPly> moves{};
   int length{0};
@@ -488,53 +480,16 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
   }
   std::array<int, kMaxMoves> move_scores{};
-  std::array<int, kMaxMoves> see_scores{};
-  score_moves(moves, ordering, move_scores, &see_scores);
+  score_moves(moves, ordering, move_scores);
 
   const std::size_t move_count = moves.size();
   constexpr int kDeltaMargin = 150;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
-    int see_value = see_scores[move_index];
     const int margin = capture_margin(pos, move);
     if (stand_pat + margin + kDeltaMargin < alpha) {
-      if (see_value == kSeeUnknown) {
-        see_value = cached_see(pos, move, ordering.see_cache);
-        see_scores[move_index] = see_value;
-      }
-      if (see_value <= 0) {
-        bool allow = false;
-        Undo temp;
-        pos.make(move, temp);
-        if (pos.in_check(pos.side_to_move())) {
-          allow = true;
-        } else if (creates_connected_passers(pos, move, pos.side_to_move())) {
-          allow = true;
-        }
-        pos.unmake(move, temp);
-        if (!allow) {
-          continue;
-        }
-      }
-    }
-    if (see_value == kSeeUnknown) {
-      see_value = cached_see(pos, move, ordering.see_cache);
-      see_scores[move_index] = see_value;
-    }
-    bool is_check = false;
-    Undo check_undo;
-    pos.make(move, check_undo);
-    is_check = pos.in_check(pos.side_to_move());
-    pos.unmake(move, check_undo);
-    if (see_value < 0) {
-      bool allow = is_check;
-      if (!allow) {
-        allow = creates_connected_passers(pos, move, pos.side_to_move());
-      }
-      if (!allow) {
-        continue;
-      }
+      continue;
     }
     Undo undo;
     pos.make(move, undo);
