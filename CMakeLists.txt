@@ -54,6 +54,9 @@ if(_bby_sanitize_compile_flags)
   endif()
 endif()
 
+set(BBY_OUTPUT_NAME "" CACHE STRING "Override engine executable name")
+set(BBY_EVAL_FILE "" CACHE STRING "Optional evaluation file to embed")
+
 add_library(bby_core
   src/common.cpp
   src/bbinit.cpp
@@ -82,8 +85,14 @@ target_compile_options(bby_core PRIVATE
   $<$<CXX_COMPILER_ID:MSVC>:/W4>
 )
 
-add_executable(bby src/main.cpp)
+add_executable(bby
+  src/main.cpp
+  src/bench_cli.cpp
+)
 target_link_libraries(bby PRIVATE bby_core)
+if(BBY_OUTPUT_NAME)
+  set_target_properties(bby PROPERTIES OUTPUT_NAME "${BBY_OUTPUT_NAME}")
+endif()
 
 add_executable(bby-perft tools/perft_main.cpp)
 target_link_libraries(bby-perft PRIVATE bby_core)
