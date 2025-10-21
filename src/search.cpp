@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
+#include <vector>
 
 #include "debug.h"
 
@@ -20,6 +21,77 @@ constexpr Score mate_score(int ply) { return kMateValue - ply; }
 constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
 constexpr int kNullMoveReduction = 2;
+
+bool is_passed_pawn(const Position& pos, Color side, Square sq) {
+  const Bitboard opponent_pawns = pos.pieces(flip(side), PieceType::Pawn);
+  const int file = static_cast<int>(file_of(sq));
+  const int rank = static_cast<int>(rank_of(sq));
+  if (side == Color::White) {
+    for (int r = rank + 1; r <= static_cast<int>(Rank::R8); ++r) {
+      for (int df = -1; df <= 1; ++df) {
+        const int f = file + df;
+        if (f < 0 || f > 7) {
+          continue;
+        }
+        const Square target = static_cast<Square>(r * 8 + f);
+        if (opponent_pawns & bit(target)) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+  for (int r = rank - 1; r >= static_cast<int>(Rank::R1); --r) {
+    for (int df = -1; df <= 1; ++df) {
+      const int f = file + df;
+      if (f < 0 || f > 7) {
+        continue;
+      }
+      const Square target = static_cast<Square>(r * 8 + f);
+      if (opponent_pawns & bit(target)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool has_connected_passers(const Position& pos, Color side) {
+  Bitboard pawns = pos.pieces(side, PieceType::Pawn);
+  std::vector<Square> passed;
+  while (pawns) {
+    const int sq_idx = static_cast<int>(std::countr_zero(pawns));
+    pawns &= pawns - 1;
+    const Square sq = static_cast<Square>(sq_idx);
+    if (is_passed_pawn(pos, side, sq)) {
+      passed.push_back(sq);
+    }
+  }
+  const std::size_t n = passed.size();
+  if (n < 2) {
+    return false;
+  }
+  for (std::size_t i = 0; i < n; ++i) {
+    const int file_i = static_cast<int>(file_of(passed[i]));
+    const int rank_i = static_cast<int>(rank_of(passed[i]));
+    for (std::size_t j = i + 1; j < n; ++j) {
+      const int file_j = static_cast<int>(file_of(passed[j]));
+      const int rank_j = static_cast<int>(rank_of(passed[j]));
+      if (std::abs(file_i - file_j) == 1 && std::abs(rank_i - rank_j) <= 1) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool creates_connected_passers(Position& pos, Move move, Color side) {
+  Undo undo;
+  pos.make(move, undo);
+  const bool result = has_connected_passers(pos, side);
+  pos.unmake(move, undo);
+  return result;
+}
 
 struct PVLine {
   std::array<Move, kMaxPly> moves{};
@@ -439,8 +511,21 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
       see_value = cached_see(pos, move, ordering.see_cache);
       see_scores[move_index] = see_value;
     }
+    bool is_check = false;
+    {
+      Undo check_undo;
+      pos.make(move, check_undo);
+      is_check = pos.in_check(pos.side_to_move());
+      pos.unmake(move, check_undo);
+    }
     if (see_value < 0) {
-      continue;
+      bool allow = is_check;
+      if (!allow) {
+        allow = creates_connected_passers(pos, move, pos.side_to_move());
+      }
+      if (!allow) {
+        continue;
+      }
     }
     Undo undo;
     pos.make(move, undo);
