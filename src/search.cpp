@@ -881,6 +881,15 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
     bool aborted_depth = false;
     int produced_lines = 0;
 
+    if (state.stop_flag != nullptr &&
+        state.stop_flag->load(std::memory_order_acquire)) {
+      state.aborted = true;
+      aborted_depth = true;
+    }
+    if (aborted_depth) {
+      break;
+    }
+
     for (int pv_index = 0; pv_index < active_multipv; ++pv_index) {
       state.root_exclude_count = pv_index;
       for (int idx = 0; idx < pv_index; ++idx) {
