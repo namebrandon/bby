@@ -87,10 +87,14 @@ class Engine:
         self._write("isready")
         self._read_until("readyok")
 
-    def bestmove(self, fen: str, depth: int) -> str:
+    def bestmove(self, fen: str, depth: Optional[int], movetime_ms: Optional[int]) -> str:
+        assert depth is not None or movetime_ms is not None
         self._write("ucinewgame")
         self._write(f"position fen {fen}")
-        self._write(f"go depth {depth}")
+        if depth is not None:
+            self._write(f"go depth {depth}")
+        else:
+            self._write(f"go movetime {movetime_ms}")
         assert self.proc.stdout is not None
         for line in self.proc.stdout:
             if line.startswith("bestmove"):
@@ -126,7 +130,8 @@ def run_suite(
     engine_path: Path,
     converter_path: Path,
     positions: Sequence[Position],
-    depth: int,
+    depth: Optional[int],
+    movetime_ms: Optional[int],
     verbose: bool,
     fail_on_miss: bool,
 ) -> int:
@@ -141,7 +146,7 @@ def run_suite(
                 converted = convert_san(converter_path, pos.fen, san)
                 if converted:
                     expected.add(converted)
-            best = engine.bestmove(pos.fen, depth)
+            best = engine.bestmove(pos.fen, depth, movetime_ms)
             ident = pos.ident or f"WAC.{idx:03d}"
             ok = best in expected and best != ""
             if ok:
@@ -150,7 +155,11 @@ def run_suite(
                 print(
                     f"{ident}: {'OK' if ok else 'MISS'} expected={sorted(expected) if expected else None} got={best}"
                 )
-        print(f"Solved {solved} / {total} at depth {depth}")
+        if depth is not None:
+            descriptor = f"depth {depth}"
+        else:
+            descriptor = f"movetime {movetime_ms} ms"
+        print(f"Solved {solved} / {total} at {descriptor}")
         if fail_on_miss and solved != total:
             return 1
         return 0
@@ -171,6 +180,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         type=int,
         help="search depth to use (default: 3 for quick, 6 for full)",
     )
+    parser.add_argument(
+        "--movetime",
+        type=int,
+        help="fixed movetime in milliseconds (overrides depth if supplied)",
+    )
     parser.add_argument("--engine", type=Path, default=DEFAULT_ENGINE, help="path to bby binary")
     parser.add_argument(
         "--converter", type=Path, default=DEFAULT_CONVERTER, help="path to bby-san-to-uci helper"
@@ -190,13 +204,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     mode_limit = 10 if args.mode == "quick" else None
     limit = args.limit if args.limit is not None else mode_limit
+    movetime_ms = args.movetime
     depth = args.depth if args.depth is not None else (3 if args.mode == "quick" else 6)
+    if movetime_ms is not None:
+        if movetime_ms <= 0:
+            parser.error("--movetime must be positive")
+        depth = None
+    elif depth is None:
+        parser.error("either --depth or --movetime must be provided")
 
     positions = parse_epd(args.epd, limit)
     if not positions:
         parser.error("no positions parsed from EPD")
 
-    return run_suite(args.engine, args.converter, positions, depth, args.verbose, args.fail_on_miss)
+    return run_suite(
+        args.engine, args.converter, positions, depth, movetime_ms, args.verbose, args.fail_on_miss
+    )
 
 
 if __name__ == "__main__":
