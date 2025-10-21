@@ -17,6 +17,8 @@ struct Limits {
   std::int64_t btime_ms{-1};
   std::int64_t winc_ms{0};
   std::int64_t binc_ms{0};
+  int movestogo{-1};
+  int mate{-1};
   int multipv{1};
   int lmr_min_depth{kLmrMinDepthDefault};
   int lmr_min_move{kLmrMinMoveDefault};

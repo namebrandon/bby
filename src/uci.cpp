@@ -347,6 +347,13 @@ class SearchWorker {
               info << "info multipv " << (idx + 1)
                    << " depth " << result.depth
                    << " nodes " << result.nodes;
+              if (result.elapsed_ms > 0) {
+                info << " time " << result.elapsed_ms;
+                const std::uint64_t nps = static_cast<std::uint64_t>(
+                    (result.nodes * 1000ULL) /
+                    std::max<std::int64_t>(result.elapsed_ms, 1));
+                info << " nps " << nps;
+              }
               append_score_info(info, line.eval);
               if (!line.pv.line.empty()) {
                 info << " pv";
@@ -732,6 +739,14 @@ void handle_go(UciState& state, std::string_view args) {
     } else if (token == "nodes") {
       if (auto val = parse_int(consume_token(view))) {
         limits.nodes = *val;
+      }
+    } else if (token == "movestogo") {
+      if (auto val = parse_int(consume_token(view))) {
+        limits.movestogo = static_cast<int>(std::clamp<std::int64_t>(*val, 1, 200));
+      }
+    } else if (token == "mate") {
+      if (auto val = parse_int(consume_token(view))) {
+        limits.mate = static_cast<int>(std::clamp<std::int64_t>(*val, 1, 100));
       }
     } else if (token == "infinite") {
       limits.infinite = true;

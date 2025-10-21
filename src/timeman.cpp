@@ -46,7 +46,10 @@ TimeBudget compute_time_budget(const Limits& limits, Color stm) {
     return budget;
   }
 
-  const std::int64_t base_time = std::max<std::int64_t>(time_left / 20, 0);
+  const int divisor = limits.movestogo > 0 ? limits.movestogo : 20;
+  const std::int64_t base_time = std::max<std::int64_t>(time_left /
+                                                        std::max(divisor, 1),
+                                                        0);
   const std::int64_t inc_time = std::max<std::int64_t>(increment / 2, 0);
   std::int64_t allocate = base_time + inc_time;
 

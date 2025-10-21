@@ -32,4 +32,14 @@ TEST_CASE("compute_time_budget respects minimum move time", "[timeman]") {
   REQUIRE(budget.hard_ms >= budget.soft_ms);
 }
 
+TEST_CASE("compute_time_budget honors movestogo when provided", "[timeman]") {
+  Limits limits;
+  limits.wtime_ms = 120'000;
+  limits.movestogo = 40;
+  limits.movetime_ms = -1;
+  const auto budget = compute_time_budget(limits, Color::White);
+  REQUIRE(budget.soft_ms == 3'000);
+  REQUIRE(budget.hard_ms == 3'050);
+}
+
 }  // namespace bby::test

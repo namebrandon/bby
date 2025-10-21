@@ -838,12 +838,13 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.multi_cut_candidates = std::clamp(limits.multi_cut_candidates, 0, 32);
   state.multi_cut_threshold = std::clamp(limits.multi_cut_threshold, 0, 32);
   state.multi_cut_prunes = 0;
+  state.start_time = std::chrono::steady_clock::now();
   const TimeBudget time_budget = compute_time_budget(limits, root.side_to_move());
   state.hard_time_ms = time_budget.hard_ms;
   state.soft_time_ms = std::min<std::int64_t>(time_budget.soft_ms, time_budget.hard_ms);
   state.use_time = state.hard_time_ms > 0;
-  if (state.use_time) {
-    state.start_time = std::chrono::steady_clock::now();
+  if (!state.use_time) {
+    state.soft_time_ms = 0;
   }
   state.stop_flag = stop_flag;
 
@@ -1055,6 +1056,11 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   result.static_futility_prunes = state.static_futility_prunes;
   result.razor_prunes = state.razor_prunes;
   result.multi_cut_prunes = state.multi_cut_prunes;
+  const auto finish_time = std::chrono::steady_clock::now();
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                              finish_time - state.start_time)
+                              .count();
+  result.elapsed_ms = elapsed_ms;
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
   result.aborted = state.aborted;
