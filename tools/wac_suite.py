@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Set, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ENGINE = REPO_ROOT / "build" / "release" / "bby"
+DEFAULT_ENGINE = REPO_ROOT / "build" / "release" / "Engine-Test"
 DEFAULT_CONVERTER = REPO_ROOT / "build" / "release" / "bby-san-to-uci"
 DEFAULT_EPD = REPO_ROOT / "tests" / "positions" / "wacnew.epd"
 

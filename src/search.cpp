@@ -1063,6 +1063,23 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   result.elapsed_ms = elapsed_ms;
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
+  if (result.best.is_null() && !root_entry.best_move.is_null()) {
+    result.best = root_entry.best_move;
+    result.pv.line.clear();
+    result.pv.line.push_back(root_entry.best_move);
+    if (result.lines.empty()) {
+      PVLine line;
+      line.best = root_entry.best_move;
+      line.pv.line = result.pv.line;
+      line.eval = result.eval;
+      result.lines.push_back(line);
+    } else {
+      result.lines.front().best = root_entry.best_move;
+      if (result.lines.front().pv.line.empty()) {
+        result.lines.front().pv.line = result.pv.line;
+      }
+    }
+  }
   result.aborted = state.aborted;
 
   emit_search_trace_finish(result);
