@@ -81,6 +81,10 @@ struct SearchState {
   int static_futility_margin{128};
   int static_futility_depth{1};
   int static_futility_prunes{0};
+  bool enable_razoring{true};
+  int razor_margin{256};
+  int razor_depth{1};
+  int razor_prunes{0};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -329,6 +333,39 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       }
       ++state.static_futility_prunes;
       return futility_value;
+    }
+  }
+
+  if (!in_check && state.enable_razoring && state.razor_depth > 0 && ply > 0 &&
+      !in_pv && !previous_null && depth <= state.razor_depth) {
+    if (!have_static_eval) {
+      static_eval = evaluate(pos);
+      have_static_eval = true;
+    }
+    const Score margin =
+        static_cast<Score>(state.razor_margin * std::max(depth, 1));
+    const Score threshold =
+        std::clamp(static_eval + margin, static_cast<Score>(-kEvalInfinity),
+                   static_cast<Score>(kEvalInfinity));
+    if (threshold <= alpha) {
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search razoring"
+            << " ply=" << ply
+            << " depth=" << depth
+            << " alpha=" << alpha
+            << " static=" << static_eval
+            << " margin=" << margin;
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+      const Score razor_score = qsearch(pos, alpha, beta, tables, state, ply);
+      if (state.aborted) {
+        return razor_score;
+      }
+      if (razor_score <= alpha) {
+        ++state.razor_prunes;
+        return razor_score;
+      }
     }
   }
 
@@ -680,6 +717,10 @@ SearchResult search(Position& root, const Limits& limits) {
   state.static_futility_margin = std::clamp(limits.static_futility_margin, 0, 1024);
   state.static_futility_depth = std::clamp(limits.static_futility_depth, 0, 3);
   state.static_futility_prunes = 0;
+  state.enable_razoring = limits.enable_razoring;
+  state.razor_margin = std::clamp(limits.razor_margin, 0, 2048);
+  state.razor_depth = std::clamp(limits.razor_depth, 0, 3);
+  state.razor_prunes = 0;
 
   emit_search_trace_start(root, limits);
 
@@ -871,6 +912,7 @@ SearchResult search(Position& root, const Limits& limits) {
                              ? 0
                              : state.history.get(root.side_to_move(), result.best);
   result.static_futility_prunes = state.static_futility_prunes;
+  result.razor_prunes = state.razor_prunes;
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
   result.aborted = state.aborted;

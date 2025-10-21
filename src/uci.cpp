@@ -405,6 +405,9 @@ struct UciState {
   bool enable_static_futility{true};
   int static_futility_margin{128};
   int static_futility_depth{1};
+  bool enable_razoring{true};
+  int razor_margin{256};
+  int razor_depth{1};
   InitState init;
 
   explicit UciState(const InitState& init_state)
@@ -439,6 +442,12 @@ void emit_options(const UciState& state) {
                              std::to_string(state.static_futility_margin));
   write_line(state.io, "option name Static Futility Depth type spin default 1 min 0 max 3 value " +
                              std::to_string(state.static_futility_depth));
+  write_line(state.io, std::string("option name Razoring type check default true value ") +
+                             (state.enable_razoring ? "true" : "false"));
+  write_line(state.io, "option name Razoring Margin type spin default 256 min 0 max 2048 value " +
+                             std::to_string(state.razor_margin));
+  write_line(state.io, "option name Razoring Depth type spin default 1 min 0 max 3 value " +
+                             std::to_string(state.razor_depth));
   write_line(state.io, "option name Bench Nodes Limit type spin default 0 min 0 max 10000000 value " +
                              std::to_string(state.bench_nodes_limit));
 }
@@ -608,6 +617,28 @@ void handle_setoption(UciState& state, std::string_view args) {
       state.static_futility_depth =
           static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 3));
     }
+  } else if (name == "Razoring") {
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (lowered == "true" || lowered == "1") {
+      state.enable_razoring = true;
+    } else if (lowered == "false" || lowered == "0") {
+      state.enable_razoring = false;
+    }
+  } else if (name == "Razoring Margin") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.razor_margin =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 2048));
+    }
+  } else if (name == "Razoring Depth") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.razor_depth =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 3));
+    }
   } else if (name == "Debug Log File") {
     send_info(state.io, "debug log unsupported");
   } else {
@@ -664,6 +695,9 @@ void handle_go(UciState& state, std::string_view args) {
   limits.enable_static_futility = state.enable_static_futility;
   limits.static_futility_margin = state.static_futility_margin;
   limits.static_futility_depth = state.static_futility_depth;
+  limits.enable_razoring = state.enable_razoring;
+  limits.razor_margin = state.razor_margin;
+  limits.razor_depth = state.razor_depth;
 
   if (state.worker.is_busy()) {
     state.worker.request_stop();
@@ -829,6 +863,9 @@ void handle_bench(UciState& state, std::string_view args) {
     limits.enable_static_futility = state.enable_static_futility;
     limits.static_futility_margin = state.static_futility_margin;
     limits.static_futility_depth = state.static_futility_depth;
+    limits.enable_razoring = state.enable_razoring;
+    limits.razor_margin = state.razor_margin;
+    limits.razor_depth = state.razor_depth;
     const auto start = std::chrono::steady_clock::now();
     const SearchResult result = search(pos, limits);
     const auto stop = std::chrono::steady_clock::now();

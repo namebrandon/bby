@@ -31,6 +31,7 @@ struct SearchResult {
   std::int64_t nodes{0};
   Score eval{0};
   int static_futility_prunes{0};
+  int razor_prunes{0};
   bool tt_hit{false};
   Move primary_killer{};
   int history_bonus{0};

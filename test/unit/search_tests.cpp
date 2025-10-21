@@ -230,4 +230,25 @@ TEST_CASE("Static futility pruning can skip hopeless branches", "[search][futili
   REQUIRE(disabled_result.static_futility_prunes == 0);
 }
 
+TEST_CASE("Razoring collapses low-value shallow nodes", "[search][razoring]") {
+  const std::string fen =
+      "6k1/5ppp/8/8/8/8/5PPP/6KQ w - - 0 1";
+  Limits limits;
+  limits.depth = 2;
+  limits.enable_static_futility = false;
+  limits.enable_razoring = true;
+  limits.razor_margin = 0;
+  limits.razor_depth = 1;
+
+  Position pos = Position::from_fen(fen, false);
+  const auto enabled = search(pos, limits);
+  REQUIRE(enabled.razor_prunes > 0);
+
+  Limits disabled = limits;
+  disabled.enable_razoring = false;
+  Position pos_disabled = Position::from_fen(fen, false);
+  const auto disabled_result = search(pos_disabled, disabled);
+  REQUIRE(disabled_result.razor_prunes == 0);
+}
+
 }  // namespace bby::test

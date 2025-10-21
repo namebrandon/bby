@@ -23,6 +23,9 @@ struct Limits {
   bool enable_static_futility{true};
   int static_futility_margin{128};
   int static_futility_depth{1};
+  bool enable_razoring{true};
+  int razor_margin{256};
+  int razor_depth{1};
   bool infinite{false};
 };
 
