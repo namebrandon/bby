@@ -26,6 +26,11 @@ struct Limits {
   bool enable_razoring{true};
   int razor_margin{256};
   int razor_depth{1};
+  bool enable_multi_cut{true};
+  int multi_cut_min_depth{4};
+  int multi_cut_reduction{2};
+  int multi_cut_candidates{8};
+  int multi_cut_threshold{3};
   bool infinite{false};
 };
 

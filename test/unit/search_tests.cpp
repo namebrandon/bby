@@ -251,4 +251,28 @@ TEST_CASE("Razoring collapses low-value shallow nodes", "[search][razoring]") {
   REQUIRE(disabled_result.razor_prunes == 0);
 }
 
+TEST_CASE("Multi-cut pruning detects repeated fail-highs", "[search][multicut]") {
+  const std::string fen =
+      "6k1/5ppp/8/8/8/8/5PPP/6KQ w - - 0 1";
+  Limits limits;
+  limits.depth = 3;
+  limits.enable_static_futility = false;
+  limits.enable_razoring = false;
+  limits.enable_multi_cut = true;
+  limits.multi_cut_min_depth = 1;
+  limits.multi_cut_reduction = 0;
+  limits.multi_cut_candidates = 2;
+  limits.multi_cut_threshold = 1;
+
+  Position pos = Position::from_fen(fen, false);
+  const auto enabled = search(pos, limits);
+  REQUIRE(enabled.multi_cut_prunes > 0);
+
+  Limits disabled = limits;
+  disabled.enable_multi_cut = false;
+  Position pos_disabled = Position::from_fen(fen, false);
+  const auto disabled_result = search(pos_disabled, disabled);
+  REQUIRE(disabled_result.multi_cut_prunes == 0);
+}
+
 }  // namespace bby::test

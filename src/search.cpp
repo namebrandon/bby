@@ -6,6 +6,7 @@
 #include <bit>
 #include <cstdint>
 #include <iomanip>
+#include <numeric>
 #include <sstream>
 #include <vector>
 
@@ -85,6 +86,12 @@ struct SearchState {
   int razor_margin{256};
   int razor_depth{1};
   int razor_prunes{0};
+  bool enable_multi_cut{true};
+  int multi_cut_min_depth{4};
+  int multi_cut_reduction{2};
+  int multi_cut_candidates{8};
+  int multi_cut_threshold{3};
+  int multi_cut_prunes{0};
 };
 
 std::atomic<int> g_singular_margin{50};
@@ -408,6 +415,65 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   std::array<int, kMaxMoves> move_scores{};
   score_moves(moves, ordering, move_scores);
 
+  if (!in_check && state.enable_multi_cut && state.multi_cut_threshold > 0 &&
+      state.multi_cut_candidates > 0 && state.multi_cut_min_depth > 0 &&
+      !in_pv && !previous_null && ply > 0 && depth >= state.multi_cut_min_depth) {
+    const int reduced_depth = depth - 1 - state.multi_cut_reduction;
+    if (reduced_depth >= 0) {
+      const std::size_t move_count = moves.size();
+      const int candidates = std::min<int>(state.multi_cut_candidates,
+                                           static_cast<int>(move_count));
+      if (candidates > 0) {
+        std::vector<std::size_t> order(move_count);
+        std::iota(order.begin(), order.end(), std::size_t{0});
+        std::partial_sort(order.begin(), order.begin() + candidates, order.end(),
+                          [&](std::size_t lhs, std::size_t rhs) {
+                            return move_scores[lhs] > move_scores[rhs];
+                          });
+        const auto history_snapshot = state.history;
+        const auto killers_snapshot = state.killers;
+        int cut_count = 0;
+        for (int idx = 0; idx < candidates; ++idx) {
+          const Move move = moves[order[static_cast<std::size_t>(idx)]];
+          if (is_root_excluded(state, move, ply)) {
+            continue;
+          }
+          Undo undo;
+          pos.make(move, undo);
+          const Score cut_score = -negamax(pos, reduced_depth, -beta, -beta + 1, tables, state,
+                                           ply + 1, nullptr, false);
+          pos.unmake(move, undo);
+          if (state.aborted) {
+            state.history = history_snapshot;
+            state.killers = killers_snapshot;
+            return beta;
+          }
+          if (cut_score >= beta) {
+            ++cut_count;
+            if (cut_count >= state.multi_cut_threshold) {
+              state.history = history_snapshot;
+              state.killers = killers_snapshot;
+              if (trace_search) {
+                std::ostringstream oss;
+                oss << "trace search multi-cut"
+                    << " ply=" << ply
+                    << " depth=" << depth
+                    << " beta=" << beta
+                    << " reduced_depth=" << reduced_depth
+                    << " cuts=" << cut_count;
+                trace_emit(TraceTopic::Search, oss.str());
+              }
+              ++state.multi_cut_prunes;
+              return beta;
+            }
+          }
+        }
+        state.history = history_snapshot;
+        state.killers = killers_snapshot;
+      }
+    }
+  }
+
   const bool singular_extension = tt_hit && should_extend_singular(pos, moves, tt_entry.best_move,
                                                                    depth, tt_entry, tables,
                                                                    state, ply, previous_null);
@@ -721,6 +787,12 @@ SearchResult search(Position& root, const Limits& limits) {
   state.razor_margin = std::clamp(limits.razor_margin, 0, 2048);
   state.razor_depth = std::clamp(limits.razor_depth, 0, 3);
   state.razor_prunes = 0;
+  state.enable_multi_cut = limits.enable_multi_cut;
+  state.multi_cut_min_depth = std::clamp(limits.multi_cut_min_depth, 0, 64);
+  state.multi_cut_reduction = std::clamp(limits.multi_cut_reduction, 0, 4);
+  state.multi_cut_candidates = std::clamp(limits.multi_cut_candidates, 0, 32);
+  state.multi_cut_threshold = std::clamp(limits.multi_cut_threshold, 0, 32);
+  state.multi_cut_prunes = 0;
 
   emit_search_trace_start(root, limits);
 
@@ -913,6 +985,7 @@ SearchResult search(Position& root, const Limits& limits) {
                              : state.history.get(root.side_to_move(), result.best);
   result.static_futility_prunes = state.static_futility_prunes;
   result.razor_prunes = state.razor_prunes;
+  result.multi_cut_prunes = state.multi_cut_prunes;
   TTEntry root_entry{};
   result.tt_hit = tables.tt.probe(root.zobrist(), root_entry);
   result.aborted = state.aborted;

@@ -408,6 +408,11 @@ struct UciState {
   bool enable_razoring{true};
   int razor_margin{256};
   int razor_depth{1};
+  bool enable_multi_cut{true};
+  int multi_cut_min_depth{4};
+  int multi_cut_reduction{2};
+  int multi_cut_candidates{8};
+  int multi_cut_threshold{3};
   InitState init;
 
   explicit UciState(const InitState& init_state)
@@ -448,6 +453,16 @@ void emit_options(const UciState& state) {
                              std::to_string(state.razor_margin));
   write_line(state.io, "option name Razoring Depth type spin default 1 min 0 max 3 value " +
                              std::to_string(state.razor_depth));
+  write_line(state.io, std::string("option name Multi-Cut type check default true value ") +
+                             (state.enable_multi_cut ? "true" : "false"));
+  write_line(state.io, "option name Multi-Cut Min Depth type spin default 4 min 0 max 16 value " +
+                             std::to_string(state.multi_cut_min_depth));
+  write_line(state.io, "option name Multi-Cut Reduction type spin default 2 min 0 max 4 value " +
+                             std::to_string(state.multi_cut_reduction));
+  write_line(state.io, "option name Multi-Cut Candidates type spin default 8 min 1 max 32 value " +
+                             std::to_string(state.multi_cut_candidates));
+  write_line(state.io, "option name Multi-Cut Threshold type spin default 3 min 1 max 16 value " +
+                             std::to_string(state.multi_cut_threshold));
   write_line(state.io, "option name Bench Nodes Limit type spin default 0 min 0 max 10000000 value " +
                              std::to_string(state.bench_nodes_limit));
 }
@@ -639,6 +654,40 @@ void handle_setoption(UciState& state, std::string_view args) {
       state.razor_depth =
           static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 3));
     }
+  } else if (name == "Multi-Cut") {
+    std::string lowered = value;
+    std::transform(lowered.begin(), lowered.end(), lowered.begin(), [](unsigned char c) {
+      return static_cast<char>(std::tolower(c));
+    });
+    if (lowered == "true" || lowered == "1") {
+      state.enable_multi_cut = true;
+    } else if (lowered == "false" || lowered == "0") {
+      state.enable_multi_cut = false;
+    }
+  } else if (name == "Multi-Cut Min Depth") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.multi_cut_min_depth =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 16));
+    }
+  } else if (name == "Multi-Cut Reduction") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.multi_cut_reduction =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 4));
+    }
+  } else if (name == "Multi-Cut Candidates") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.multi_cut_candidates =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 1, 32));
+    }
+  } else if (name == "Multi-Cut Threshold") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.multi_cut_threshold =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 1, 16));
+    }
   } else if (name == "Debug Log File") {
     send_info(state.io, "debug log unsupported");
   } else {
@@ -698,6 +747,11 @@ void handle_go(UciState& state, std::string_view args) {
   limits.enable_razoring = state.enable_razoring;
   limits.razor_margin = state.razor_margin;
   limits.razor_depth = state.razor_depth;
+  limits.enable_multi_cut = state.enable_multi_cut;
+  limits.multi_cut_min_depth = state.multi_cut_min_depth;
+  limits.multi_cut_reduction = state.multi_cut_reduction;
+  limits.multi_cut_candidates = state.multi_cut_candidates;
+  limits.multi_cut_threshold = state.multi_cut_threshold;
 
   if (state.worker.is_busy()) {
     state.worker.request_stop();
@@ -866,6 +920,11 @@ void handle_bench(UciState& state, std::string_view args) {
     limits.enable_razoring = state.enable_razoring;
     limits.razor_margin = state.razor_margin;
     limits.razor_depth = state.razor_depth;
+    limits.enable_multi_cut = state.enable_multi_cut;
+    limits.multi_cut_min_depth = state.multi_cut_min_depth;
+    limits.multi_cut_reduction = state.multi_cut_reduction;
+    limits.multi_cut_candidates = state.multi_cut_candidates;
+    limits.multi_cut_threshold = state.multi_cut_threshold;
     const auto start = std::chrono::steady_clock::now();
     const SearchResult result = search(pos, limits);
     const auto stop = std::chrono::steady_clock::now();
