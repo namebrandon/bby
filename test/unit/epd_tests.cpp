@@ -68,7 +68,7 @@ TEST_CASE("WAC EPD exposes best-move operations", "[epd][wac]") {
   const auto result = load_epd_file(path.string());
   REQUIRE(result.ok());
   REQUIRE(result.errors.empty());
-  REQUIRE(result.records.size() == 20);
+  REQUIRE(result.records.size() == 300);
   for (const auto& record : result.records) {
     INFO(record.position.to_fen());
     REQUIRE(record.operations.contains("bm"));

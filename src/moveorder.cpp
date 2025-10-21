@@ -99,56 +99,7 @@ int history_score(const HistoryTable* history, const Position& pos, Move m) {
   return history->get(pos.side_to_move(), m) * kHistoryScale;
 }
 
-struct AttackSet {
-  std::array<Bitboard, 6> by_type{};
-  Bitboard combined{0ULL};
-};
-
 using PieceTable = std::array<std::array<Bitboard, 6>, 2>;
-
-AttackSet collect_attackers(Color side, Square target, Bitboard occ,
-                            const PieceTable& pieces) {
-  AttackSet result{};
-  const int idx = color_index(side);
-
-  const Bitboard pawns = pieces[idx][piece_index(PieceType::Pawn)];
-  const Bitboard knights = pieces[idx][piece_index(PieceType::Knight)];
-  const Bitboard bishops = pieces[idx][piece_index(PieceType::Bishop)];
-  const Bitboard rooks = pieces[idx][piece_index(PieceType::Rook)];
-  const Bitboard queens = pieces[idx][piece_index(PieceType::Queen)];
-  const Bitboard kings = pieces[idx][piece_index(PieceType::King)];
-
-  Bitboard diagonal = 0ULL;
-  const Bitboard diagonal_sliders = bishops | queens;
-  if (diagonal_sliders != 0ULL) {
-    diagonal = bishop_attacks(target, occ);
-  }
-  Bitboard orthogonal = 0ULL;
-  const Bitboard orthogonal_sliders = rooks | queens;
-  if (orthogonal_sliders != 0ULL) {
-    orthogonal = rook_attacks(target, occ);
-  }
-
-  result.by_type[piece_index(PieceType::Pawn)] =
-      pawn_attacks(flip(side), target) & pawns;
-  result.by_type[piece_index(PieceType::Knight)] =
-      knight_attacks(target) & knights;
-  result.by_type[piece_index(PieceType::Bishop)] =
-      diagonal & bishops;
-  result.by_type[piece_index(PieceType::Rook)] =
-      orthogonal & rooks;
-  result.by_type[piece_index(PieceType::Queen)] =
-      (diagonal | orthogonal) & queens;
-  result.by_type[piece_index(PieceType::King)] =
-      king_attacks(target) & kings;
-
-  for (const Bitboard bb : result.by_type) {
-    result.combined |= bb;
-  }
-
-  return result;
-}
-
 struct SeeState {
   PieceTable pieces{};
   std::array<Bitboard, 2> occ_by_color{};
@@ -372,17 +323,77 @@ int see(const Position& pos, Move m) {
   Color current_color = us;
   state.place_piece(current_color, current_type, to);
 
-  Color side = them;
-  AttackSet attackers = collect_attackers(side, to, state.occ, state.pieces);
+  auto slider_attacks = [&](Bitboard occ) {
+    const Bitboard bishops = bishop_attacks(to, occ);
+    const Bitboard rooks = rook_attacks(to, occ);
+    return std::pair{bishops, rooks};
+  };
 
-  while (attackers.combined != 0ULL) {
+  auto compute_non_sliders = [&](Color side) {
+    const int idx = color_index(side);
+    Bitboard attackers_bb = pawn_attacks(flip(side), to) &
+                            state.pieces[idx][piece_index(PieceType::Pawn)];
+    attackers_bb |= knight_attacks(to) &
+                    state.pieces[idx][piece_index(PieceType::Knight)];
+    attackers_bb |= king_attacks(to) &
+                    state.pieces[idx][piece_index(PieceType::King)];
+    return attackers_bb;
+  };
+
+  std::array<Bitboard, 2> non_sliders{
+      compute_non_sliders(Color::White),
+      compute_non_sliders(Color::Black),
+  };
+
+  const Bitboard bishop_rays = bishop_attacks(to, 0ULL);
+  const Bitboard rook_rays = rook_attacks(to, 0ULL);
+
+  auto compute_attackers = [&](Color side, Bitboard bishop_mask, Bitboard rook_mask) {
+    const int idx = color_index(side);
+    Bitboard attackers_bb = non_sliders[idx];
+    const Bitboard bishop_like =
+        (state.pieces[idx][piece_index(PieceType::Bishop)] |
+         state.pieces[idx][piece_index(PieceType::Queen)]);
+    const Bitboard rook_like =
+        (state.pieces[idx][piece_index(PieceType::Rook)] |
+         state.pieces[idx][piece_index(PieceType::Queen)]);
+    attackers_bb |= bishop_mask & bishop_like;
+    attackers_bb |= rook_mask & rook_like;
+    return attackers_bb;
+  };
+
+  Bitboard bishop_mask{};
+  Bitboard rook_mask{};
+  {
+    const auto masks = slider_attacks(state.occ);
+    bishop_mask = masks.first;
+    rook_mask = masks.second;
+  }
+
+  std::array<Bitboard, 2> attackers{};
+  std::array<bool, 2> dirty{true, true};
+
+  Color side = them;
+
+  while (true) {
+    const int side_idx = color_index(side);
+    if (dirty[side_idx]) {
+      attackers[side_idx] = compute_attackers(side, bishop_mask, rook_mask);
+      dirty[side_idx] = false;
+    }
+    Bitboard side_attackers = attackers[side_idx];
+    if (side_attackers == 0ULL) {
+      break;
+    }
+
     PieceType attacker_type = PieceType::None;
     Square attacker_sq = Square::None;
 
     for (const PieceType candidate : kSeeOrder) {
-      Bitboard bb = attackers.by_type[piece_index(candidate)];
-      if (bb != 0ULL) {
-        attacker_sq = pop_lsb(bb);
+      Bitboard pool = state.pieces[side_idx][piece_index(candidate)] & side_attackers;
+      if (pool != 0ULL) {
+        const int sq_idx = static_cast<int>(std::countr_zero(pool));
+        attacker_sq = static_cast<Square>(sq_idx);
         attacker_type = candidate;
         break;
       }
@@ -393,18 +404,29 @@ int see(const Position& pos, Move m) {
     }
 
     ++depth;
-    gains[depth] =
-        kPieceValues[piece_index(current_type)] - gains[depth - 1];
+    gains[depth] = kPieceValues[piece_index(current_type)] - gains[depth - 1];
 
     state.remove_piece(current_color, current_type, to);
+    const Bitboard from_mask = bit(attacker_sq);
     state.remove_piece(side, attacker_type, attacker_sq);
+    if (attacker_type == PieceType::Pawn || attacker_type == PieceType::Knight ||
+        attacker_type == PieceType::King) {
+      non_sliders[side_idx] &= ~from_mask;
+    }
 
     current_color = side;
     current_type = attacker_type;
     state.place_piece(current_color, current_type, to);
 
     side = flip(side);
-    attackers = collect_attackers(side, to, state.occ, state.pieces);
+    const bool needs_slider_update =
+        ((from_mask & bishop_rays) != 0ULL) || ((from_mask & rook_rays) != 0ULL);
+    if (needs_slider_update) {
+      const auto masks = slider_attacks(state.occ);
+      bishop_mask = masks.first;
+      rook_mask = masks.second;
+    }
+    dirty = {true, true};
   }
 
   for (int idx = depth; idx > 0; --idx) {
