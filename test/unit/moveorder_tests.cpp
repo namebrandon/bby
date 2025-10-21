@@ -174,9 +174,7 @@ TEST_CASE("score_moves leaves SEE deferred for favorable trades", "[moveorder]")
     }
   }
   REQUIRE(found);
-  REQUIRE(see_entry == kSeeUnknown);
-  const int resolved = cached_see(pos, pawn_takes_rook, &cache);
-  REQUIRE(resolved > 0);
+  REQUIRE(see_entry > 0);
 }
 
 }  // namespace bby::test

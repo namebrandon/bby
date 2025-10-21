@@ -209,16 +209,21 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
           promotion_type(move) != PieceType::None || flag == MoveFlag::EnPassant ||
           attacker_value >= victim_value;
       int see_value = 0;
+      const int margin = material(victim) - attacker_value;
+      const bool guaranteed_win = margin >= 300;
       bool have_see = false;
-      if (force_see || needs_see) {
+      if (guaranteed_win) {
+        see_value = margin;
+        have_see = true;
+      } else if (force_see || needs_see) {
         see_value = cached_see(pos, move, ctx.see_cache);
         have_see = true;
-        if (needs_see && see_value < 0) {
-          score -= kBadCapturePenalty;
-        }
       }
-      if (see_results != nullptr && have_see) {
-        (*see_results)[idx] = see_value;
+      if (!guaranteed_win && needs_see && have_see && see_value < 0) {
+        score -= kBadCapturePenalty;
+      }
+      if (see_results != nullptr) {
+        (*see_results)[idx] = have_see ? see_value : kSeeUnknown;
       }
     }
 
@@ -419,14 +424,17 @@ int see(const Position& pos, Move m) {
     state.place_piece(current_color, current_type, to);
 
     side = flip(side);
-    const bool needs_slider_update =
-        ((from_mask & bishop_rays) != 0ULL) || ((from_mask & rook_rays) != 0ULL);
-    if (needs_slider_update) {
-      const auto masks = slider_attacks(state.occ);
-      bishop_mask = masks.first;
-      rook_mask = masks.second;
+    const bool touches_diag = (from_mask & bishop_rays) != 0ULL;
+    const bool touches_orth = (from_mask & rook_rays) != 0ULL;
+    if (touches_diag) {
+      bishop_mask = bishop_attacks(to, state.occ);
     }
-    dirty = {true, true};
+    if (touches_orth) {
+      rook_mask = rook_attacks(to, state.occ);
+    }
+    if (touches_diag || touches_orth) {
+      dirty = {true, true};
+    }
   }
 
   for (int idx = depth; idx > 0; --idx) {
