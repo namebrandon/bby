@@ -22,6 +22,8 @@ constexpr Score mate_score(int ply) { return kMateValue - ply; }
 constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
 constexpr int kNullMoveReduction = 2;
+constexpr Score kAspirationBase = 64;
+constexpr Score kAspirationScale = 16;
 
 struct SearchTables {
   SearchTables() : tt(kDefaultTTMegabytes) {}
@@ -72,9 +74,23 @@ struct SearchState {
   std::int64_t nodes{0};
   std::int64_t node_cap{-1};
   bool aborted{false};
+  std::array<Move, kMaxMoves> root_excludes{};
+  int root_exclude_count{0};
 };
 
 std::atomic<int> g_singular_margin{50};
+
+bool is_root_excluded(const SearchState& state, Move move, int ply) {
+  if (ply != 0 || state.root_exclude_count <= 0) {
+    return false;
+  }
+  for (int idx = 0; idx < state.root_exclude_count; ++idx) {
+    if (state.root_excludes[static_cast<std::size_t>(idx)] == move) {
+      return true;
+    }
+  }
+  return false;
+}
 
 int count_non_pawn_material(const Position& pos, Color color) {
   int total = 0;
@@ -172,6 +188,11 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
 Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& tables,
               SearchState& state, int ply, PvTable* pv_table, bool previous_null);
 
+Score aspiration_margin(int depth) {
+  const Score margin = kAspirationBase + static_cast<Score>(kAspirationScale * std::max(depth - 1, 0));
+  return std::clamp<Score>(margin, 32, kEvalInfinity);
+}
+
 bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
                             int depth, const TTEntry& tt_entry,
                             SearchTables& tables, SearchState& state, int ply,
@@ -245,7 +266,8 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     state.aborted = true;
     return alpha;
   }
-  if (pv_table != nullptr) {
+  const bool in_pv = (pv_table != nullptr);
+  if (in_pv) {
     pv_table->reset_row(ply);
   }
 
@@ -256,7 +278,8 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   const Score alpha_orig = alpha;
   TTEntry tt_entry{};
   const bool tt_hit = tables.tt.probe(pos.zobrist(), tt_entry);
-  if (tt_hit && tt_entry.depth >= depth) {
+  const bool root_with_exclusions = (ply == 0 && state.root_exclude_count > 0);
+  if (tt_hit && tt_entry.depth >= depth && !root_with_exclusions) {
     const Score tt_score = tt_entry.score;
     if (tt_entry.bound == BoundType::Exact) {
       return tt_score;
@@ -320,23 +343,66 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
   Move best_move{};
   Score best_score = -kEvalInfinity;
+  const bool trace_search = trace_enabled(TraceTopic::Search);
 
   const std::size_t move_count = moves.size();
+  std::size_t processed_moves = 0;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
+    if (is_root_excluded(state, move, ply)) {
+      continue;
+    }
+    const bool is_primary_move = (processed_moves == 0);
     Undo undo;
     pos.make(move, undo);
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
-    const Score score = -negamax(pos, next_depth, -beta, -alpha, tables, state,
-                                 ply + 1, pv_table, false);
+    Score score = -kEvalInfinity;
+    bool searched_full_window = false;
+    if (is_primary_move) {
+      PvTable* child_pv = in_pv ? pv_table : nullptr;
+      score = -negamax(pos, next_depth, -beta, -alpha, tables, state,
+                       ply + 1, child_pv, false);
+      searched_full_window = true;
+    } else {
+      const Score null_window_beta = std::min<Score>(alpha + 1, kEvalInfinity);
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search pvs narrow"
+            << " ply=" << ply
+            << " move=" << move_to_uci(move)
+            << " alpha=" << alpha
+            << " beta=" << beta
+            << " window=[" << null_window_beta << ',' << alpha << ']';
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+      score = -negamax(pos, next_depth, -null_window_beta, -alpha, tables, state,
+                       ply + 1, nullptr, false);
+      if (!state.aborted && score > alpha && score < beta) {
+        if (trace_search) {
+          std::ostringstream oss;
+          oss << "trace search pvs research"
+              << " ply=" << ply
+              << " move=" << move_to_uci(move)
+              << " alpha=" << alpha
+              << " beta=" << beta
+              << " score=" << score;
+          trace_emit(TraceTopic::Search, oss.str());
+        }
+        PvTable* child_pv = in_pv ? pv_table : nullptr;
+        score = -negamax(pos, next_depth, -beta, -alpha, tables, state,
+                         ply + 1, child_pv, false);
+        searched_full_window = true;
+      }
+    }
     pos.unmake(move, undo);
+    ++processed_moves;
 
     if (score > best_score) {
       best_score = score;
       best_move = move;
-      if (pv_table != nullptr) {
+      if (searched_full_window && in_pv) {
         pv_table->set(ply, move);
       }
     }
@@ -350,11 +416,11 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     }
 
     if (alpha >= beta) {
-    if (is_quiet_move(move)) {
-      update_killers(state, ply, move);
-      const int bonus = kQuietHistoryBonus * depth * depth;
-      update_history(state, pos.side_to_move(), move, bonus);
-    }
+      if (is_quiet_move(move)) {
+        update_killers(state, ply, move);
+        const int bonus = kQuietHistoryBonus * depth * depth;
+        update_history(state, pos.side_to_move(), move, bonus);
+      }
       break;
     }
   }
@@ -530,39 +596,193 @@ SearchResult search(Position& root, const Limits& limits) {
   state.nodes = 0;
   state.node_cap = limits.nodes;
   state.aborted = false;
+  state.root_exclude_count = 0;
 
   emit_search_trace_start(root, limits);
 
   const int max_depth = limits.depth > 0 ? limits.depth : 1;
+  const int requested_multipv = std::clamp(limits.multipv > 0 ? limits.multipv : 1, 1,
+                                          static_cast<int>(kMaxMoves));
+
   SearchResult result;
   result.best = Move{};
   result.eval = 0;
+  result.lines.clear();
 
   PvTable pv_table{};
   pv_table.clear();
   std::vector<Move> root_line;
+  std::vector<PVLine> multipv_lines(static_cast<std::size_t>(requested_multipv));
+  std::vector<Score> previous_scores(static_cast<std::size_t>(requested_multipv), 0);
+  std::vector<bool> have_previous(static_cast<std::size_t>(requested_multipv), false);
+  int active_multipv = requested_multipv;
 
   for (int current_depth = 1; current_depth <= max_depth; ++current_depth) {
     ++tables.generation;
     tables.tt.set_generation(tables.generation);
 
     result.depth = current_depth;
-    pv_table.clear();
-    const Score score = negamax(root, current_depth, -kEvalInfinity, kEvalInfinity,
-                                tables, state, 0, &pv_table, false);
-    result.eval = score;
-    result.nodes = state.nodes;
-    if (state.aborted) {
-      break;
+    const bool trace_search_enabled = trace_enabled(TraceTopic::Search);
+    bool aborted_depth = false;
+    int produced_lines = 0;
+
+    for (int pv_index = 0; pv_index < active_multipv; ++pv_index) {
+      state.root_exclude_count = pv_index;
+      for (int idx = 0; idx < pv_index; ++idx) {
+        state.root_excludes[static_cast<std::size_t>(idx)] =
+            multipv_lines[static_cast<std::size_t>(idx)].best;
+      }
+
+      Score alpha = -kEvalInfinity;
+      Score beta = kEvalInfinity;
+      Score window = aspiration_margin(current_depth);
+      Score score = 0;
+      bool use_aspiration = have_previous[static_cast<std::size_t>(pv_index)];
+      const Score previous_score = previous_scores[static_cast<std::size_t>(pv_index)];
+      int attempt = 0;
+
+      if (use_aspiration) {
+        alpha = std::max(previous_score - window, -kEvalInfinity);
+        beta = std::min(previous_score + window, kEvalInfinity);
+        if (alpha >= beta) {
+          alpha = -kEvalInfinity;
+          beta = kEvalInfinity;
+          use_aspiration = false;
+        } else if (trace_search_enabled) {
+          std::ostringstream oss;
+          oss << "aspiration start depth=" << current_depth
+              << " multipv=" << (pv_index + 1)
+              << " alpha=" << alpha
+              << " beta=" << beta
+              << " window=" << window;
+          trace_emit(TraceTopic::Search, oss.str());
+        }
+      }
+
+      while (true) {
+        pv_table.clear();
+        ++attempt;
+        if (trace_search_enabled && use_aspiration) {
+          std::ostringstream oss;
+          oss << "aspiration attempt depth=" << current_depth
+              << " multipv=" << (pv_index + 1)
+              << " attempt=" << attempt
+              << " alpha=" << alpha
+              << " beta=" << beta;
+          trace_emit(TraceTopic::Search, oss.str());
+        }
+
+        score = negamax(root, current_depth, alpha, beta, tables, state, 0, &pv_table, false);
+        if (state.aborted) {
+          aborted_depth = true;
+          break;
+        }
+        if (!use_aspiration) {
+          break;
+        }
+
+        if (score <= alpha) {
+          if (trace_search_enabled) {
+            std::ostringstream oss;
+            oss << "aspiration fail-low depth=" << current_depth
+                << " multipv=" << (pv_index + 1)
+                << " score=" << score
+                << " alpha=" << alpha
+                << " beta=" << beta;
+            trace_emit(TraceTopic::Search, oss.str());
+          }
+          if (alpha <= -kEvalInfinity) {
+            use_aspiration = false;
+            alpha = -kEvalInfinity;
+            beta = kEvalInfinity;
+            continue;
+          }
+          window = std::min<Score>(static_cast<Score>(window * 2), kEvalInfinity);
+          const Score center = score;
+          alpha = std::max(center - window, -kEvalInfinity);
+          beta = std::min(center + window, kEvalInfinity);
+          if (alpha >= beta || (alpha <= -kEvalInfinity && beta >= kEvalInfinity)) {
+            use_aspiration = false;
+            alpha = -kEvalInfinity;
+            beta = kEvalInfinity;
+          }
+          continue;
+        }
+
+        if (score >= beta) {
+          if (trace_search_enabled) {
+            std::ostringstream oss;
+            oss << "aspiration fail-high depth=" << current_depth
+                << " multipv=" << (pv_index + 1)
+                << " score=" << score
+                << " alpha=" << alpha
+                << " beta=" << beta;
+            trace_emit(TraceTopic::Search, oss.str());
+          }
+          if (beta >= kEvalInfinity) {
+            use_aspiration = false;
+            alpha = -kEvalInfinity;
+            beta = kEvalInfinity;
+            continue;
+          }
+          window = std::min<Score>(static_cast<Score>(window * 2), kEvalInfinity);
+          const Score center = score;
+          alpha = std::max(center - window, -kEvalInfinity);
+          beta = std::min(center + window, kEvalInfinity);
+          if (alpha >= beta || (alpha <= -kEvalInfinity && beta >= kEvalInfinity)) {
+            use_aspiration = false;
+            alpha = -kEvalInfinity;
+            beta = kEvalInfinity;
+          }
+          continue;
+        }
+
+        break;
+      }
+
+      root_line.clear();
+      pv_table.extract(0, root_line);
+      PVLine line;
+      line.pv.line = root_line;
+      line.best = root_line.empty() ? Move{} : root_line.front();
+      line.eval = score;
+      multipv_lines[static_cast<std::size_t>(pv_index)] = line;
+      previous_scores[static_cast<std::size_t>(pv_index)] = score;
+      have_previous[static_cast<std::size_t>(pv_index)] = true;
+      ++produced_lines;
+
+      if (line.best.is_null()) {
+        if (pv_index == 0) {
+          active_multipv = 1;
+        } else {
+          active_multipv = pv_index;
+          --produced_lines;
+        }
+        break;
+      }
+      if (aborted_depth) {
+        break;
+      }
     }
 
-    pv_table.extract(0, root_line);
-    if (!root_line.empty()) {
-      result.best = root_line.front();
-      result.pv.line = root_line;
+    state.root_exclude_count = 0;
+    result.nodes = state.nodes;
+
+    const int available = std::min(active_multipv, produced_lines);
+    if (available > 0) {
+      result.lines.assign(multipv_lines.begin(), multipv_lines.begin() + available);
+      const PVLine& primary = result.lines.front();
+      result.best = primary.best;
+      result.pv = primary.pv;
+      result.eval = primary.eval;
+    }
+
+    if (state.aborted || aborted_depth) {
+      break;
     }
   }
 
+  result.nodes = state.nodes;
   result.primary_killer = state.killers[0][0];
   result.history_bonus = result.best.is_null()
                              ? 0

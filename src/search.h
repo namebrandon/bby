@@ -17,9 +17,16 @@ struct PV {
   std::vector<Move> line;
 };
 
+struct PVLine {
+  Move best{};
+  PV pv;
+  Score eval{0};
+};
+
 struct SearchResult {
   Move best;
   PV pv;
+  std::vector<PVLine> lines;
   int depth{0};
   std::int64_t nodes{0};
   Score eval{0};

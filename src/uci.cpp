@@ -210,6 +210,22 @@ std::string format_move(const Move move) {
   return result;
 }
 
+void append_score_info(std::ostringstream& oss, Score eval) {
+  constexpr Score kMateValue = 30000 - 512;
+  constexpr Score kMateThreshold = kMateValue - kMaxPly;
+  if (eval >= kMateThreshold) {
+    const int ply = static_cast<int>(kMateValue - eval);
+    const int moves = (ply + 1) / 2;
+    oss << " score mate " << moves;
+  } else if (eval <= -kMateThreshold) {
+    const int ply = static_cast<int>(kMateValue + eval);
+    const int moves = (ply + 1) / 2;
+    oss << " score mate " << -moves;
+  } else {
+    oss << " score cp " << eval;
+  }
+}
+
 enum class WorkerCommandType { Start, Stop, Quit };
 
 struct SearchCommand {
@@ -323,6 +339,24 @@ class SearchWorker {
             return;
           }
 
+          if (!result.lines.empty()) {
+            for (std::size_t idx = 0; idx < result.lines.size(); ++idx) {
+              const auto& line = result.lines[idx];
+              std::ostringstream info;
+              info << "info multipv " << (idx + 1)
+                   << " depth " << result.depth
+                   << " nodes " << result.nodes;
+              append_score_info(info, line.eval);
+              if (!line.pv.line.empty()) {
+                info << " pv";
+                for (const Move move : line.pv.line) {
+                  info << ' ' << format_move(move);
+                }
+              }
+              write_line(*io_, info.str());
+            }
+          }
+
           if (stopped) {
             write_line(*io_, "bestmove 0000");
           } else {
@@ -362,6 +396,7 @@ struct UciState {
   int threads{1};
   int hash_mb{128};
   int singular_margin{50};
+  int multipv{1};
   std::int64_t bench_nodes_limit{0};
   bool debug{false};
   InitState init;
@@ -386,6 +421,8 @@ void emit_options(const UciState& state) {
                              std::to_string(state.hash_mb));
   write_line(state.io, "option name Singular Margin type spin default 50 min 0 max 1000 value " +
                              std::to_string(state.singular_margin));
+  write_line(state.io, "option name MultiPV type spin default 1 min 1 max 32 value " +
+                             std::to_string(state.multipv));
   write_line(state.io, "option name Bench Nodes Limit type spin default 0 min 0 max 10000000 value " +
                              std::to_string(state.bench_nodes_limit));
 }
@@ -519,6 +556,10 @@ void handle_setoption(UciState& state, std::string_view args) {
       const std::int64_t rounded = static_cast<std::int64_t>(std::llround(*parsed));
       state.bench_nodes_limit = std::clamp<std::int64_t>(rounded, 0, 10'000'000);
     }
+  } else if (name == "MultiPV") {
+    if (auto parsed = parse_int(value)) {
+      state.multipv = static_cast<int>(std::clamp<std::int64_t>(*parsed, 1, 32));
+    }
   } else if (name == "Debug Log File") {
     send_info(state.io, "debug log unsupported");
   } else {
@@ -568,6 +609,8 @@ void handle_go(UciState& state, std::string_view args) {
       // TODO: implement ponder support
     }
   }
+
+  limits.multipv = state.multipv;
 
   if (state.worker.is_busy()) {
     state.worker.request_stop();

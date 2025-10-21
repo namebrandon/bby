@@ -14,6 +14,7 @@ struct Limits {
   std::int64_t btime_ms{-1};
   std::int64_t winc_ms{0};
   std::int64_t binc_ms{0};
+  int multipv{1};
   bool infinite{false};
 };
 
