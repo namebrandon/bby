@@ -118,8 +118,16 @@ AttackSet collect_attackers(Color side, Square target, Bitboard occ,
   const Bitboard queens = pieces[idx][piece_index(PieceType::Queen)];
   const Bitboard kings = pieces[idx][piece_index(PieceType::King)];
 
-  const Bitboard diagonal = bishop_attacks(target, occ);
-  const Bitboard orthogonal = rook_attacks(target, occ);
+  Bitboard diagonal = 0ULL;
+  const Bitboard diagonal_sliders = bishops | queens;
+  if (diagonal_sliders != 0ULL) {
+    diagonal = bishop_attacks(target, occ);
+  }
+  Bitboard orthogonal = 0ULL;
+  const Bitboard orthogonal_sliders = rooks | queens;
+  if (orthogonal_sliders != 0ULL) {
+    orthogonal = rook_attacks(target, occ);
+  }
 
   result.by_type[piece_index(PieceType::Pawn)] =
       pawn_attacks(flip(side), target) & pawns;
@@ -169,6 +177,33 @@ struct SeeState {
 
 }  // namespace
 
+void SeeCache::clear() {
+  for (auto& entry : entries_) {
+    entry.valid = false;
+  }
+}
+
+bool SeeCache::probe(std::uint64_t key, Move move, int& out) const {
+  const std::size_t idx = index(key, move);
+  const Entry& entry = entries_[idx];
+  if (entry.valid && entry.key == key && entry.move == move) {
+    out = entry.value;
+    return true;
+  }
+  return false;
+}
+
+void SeeCache::store(std::uint64_t key, Move move, int value) {
+  const std::size_t idx = index(key, move);
+  entries_[idx] = Entry{key, move, value, true};
+}
+
+std::size_t SeeCache::index(std::uint64_t key, Move move) {
+  const std::uint64_t mixed =
+      key ^ (key >> 17) ^ (key << 13) ^ (static_cast<std::uint64_t>(move.value) << 1);
+  return static_cast<std::size_t>(mixed) & (kSize - 1);
+}
+
 int HistoryTable::get(Color color, Move move) const {
   const std::size_t idx = index(color, move);
   return values[idx];
@@ -207,6 +242,10 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
     }
 
     const MoveFlag flag = move_flag(move);
+    if (see_results != nullptr) {
+      (*see_results)[idx] = is_capture_like(flag) ? kSeeUnknown : 0;
+    }
+
     if (is_capture_like(flag)) {
       const Piece victim = capture_victim(pos, move);
       const Piece attacker = pos.piece_on(from_square(move));
@@ -219,17 +258,17 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
           promotion_type(move) != PieceType::None || flag == MoveFlag::EnPassant ||
           attacker_value >= victim_value;
       int see_value = 0;
+      bool have_see = false;
       if (force_see || needs_see) {
-        see_value = see(pos, move);
+        see_value = cached_see(pos, move, ctx.see_cache);
+        have_see = true;
+        if (needs_see && see_value < 0) {
+          score -= kBadCapturePenalty;
+        }
       }
-      if (needs_see && see_value < 0) {
-        score -= kBadCapturePenalty;
-      }
-      if (see_results != nullptr) {
+      if (see_results != nullptr && have_see) {
         (*see_results)[idx] = see_value;
       }
-    } else if (see_results != nullptr) {
-      (*see_results)[idx] = 0;
     }
 
     score += promotion_bonus(move);
@@ -263,6 +302,20 @@ void select_best_move(MoveList& ml, std::array<int, kMaxMoves>& scores, std::siz
 int capture_margin(const Position& pos, Move m) {
   const Piece victim = capture_victim(pos, m);
   return material(victim) + promotion_delta(m);
+}
+
+int cached_see(const Position& pos, Move move, SeeCache* cache) {
+  if (cache != nullptr) {
+    int cached_value = 0;
+    const std::uint64_t key = pos.zobrist();
+    if (cache->probe(key, move, cached_value)) {
+      return cached_value;
+    }
+    const int value = see(pos, move);
+    cache->store(key, move, value);
+    return value;
+  }
+  return see(pos, move);
 }
 
 int see(const Position& pos, Move m) {

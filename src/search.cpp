@@ -36,6 +36,7 @@ struct SearchTables {
 struct SearchState {
   HistoryTable history;
   std::array<std::array<Move, 2>, kMaxPly> killers{};
+  SeeCache see_cache;
   std::int64_t nodes{0};
   std::int64_t node_cap{-1};
   bool aborted{false};
@@ -276,6 +277,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   ordering.pos = &pos;
   ordering.ply = ply;
   ordering.history = &state.history;
+  ordering.see_cache = &state.see_cache;
   if (static_cast<std::size_t>(ply) < state.killers.size()) {
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
   }
@@ -409,22 +411,33 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
   ordering.pos = &pos;
   ordering.ply = ply;
   ordering.history = &state.history;
+  ordering.see_cache = &state.see_cache;
   if (static_cast<std::size_t>(ply) < state.killers.size()) {
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
   }
   std::array<int, kMaxMoves> move_scores{};
   std::array<int, kMaxMoves> see_scores{};
-  score_moves(moves, ordering, move_scores, &see_scores, true);
+  score_moves(moves, ordering, move_scores, &see_scores);
 
   const std::size_t move_count = moves.size();
   constexpr int kDeltaMargin = 150;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
-    const int see_value = see_scores[move_index];
+    int see_value = see_scores[move_index];
     const int margin = capture_margin(pos, move);
-    if (stand_pat + margin + kDeltaMargin < alpha && see_value <= 0) {
-      continue;
+    if (stand_pat + margin + kDeltaMargin < alpha) {
+      if (see_value == kSeeUnknown) {
+        see_value = cached_see(pos, move, ordering.see_cache);
+        see_scores[move_index] = see_value;
+      }
+      if (see_value <= 0) {
+        continue;
+      }
+    }
+    if (see_value == kSeeUnknown) {
+      see_value = cached_see(pos, move, ordering.see_cache);
+      see_scores[move_index] = see_value;
     }
     if (see_value < 0) {
       continue;
@@ -455,6 +468,7 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
 SearchResult search(Position& root, const Limits& limits) {
   SearchTables tables;
   SearchState state;
+  state.see_cache.clear();
   state.nodes = 0;
   state.node_cap = limits.nodes;
   state.aborted = false;

@@ -133,8 +133,50 @@ TEST_CASE("SEE handles en passant captures", "[moveorder]") {
 
 TEST_CASE("SEE rewards promotion captures", "[moveorder]") {
   Position pos = Position::from_fen("4k2r/6P1/8/8/8/8/8/4K3 w - - 0 1", true);
-  Move promo = make_move(Square::G7, Square::H8, MoveFlag::PromotionCapture, PieceType::Queen);
+ Move promo = make_move(Square::G7, Square::H8, MoveFlag::PromotionCapture, PieceType::Queen);
   REQUIRE(see(pos, promo) > 0);
+}
+
+TEST_CASE("SeeCache reuses stored results", "[moveorder]") {
+  Position pos = Position::from_fen("4k3/8/4p3/3p4/4Q3/8/8/4K3 w - - 0 1", true);
+  Move move = make_move(Square::E4, Square::D5, MoveFlag::Capture);
+  SeeCache cache{};
+  cache.clear();
+  const int computed = cached_see(pos, move, &cache);
+  REQUIRE(computed == see(pos, move));
+  int cached_value = 0;
+  REQUIRE(cache.probe(pos.zobrist(), move, cached_value));
+  REQUIRE(cached_value == computed);
+  const int reused = cached_see(pos, move, &cache);
+  REQUIRE(reused == computed);
+}
+
+TEST_CASE("score_moves leaves SEE deferred for favorable trades", "[moveorder]") {
+  Position pos = Position::from_fen("4k3/8/3r4/4P3/8/8/8/4K3 w - - 0 1", true);
+  MoveList moves;
+  pos.generate_moves(moves, GenStage::Captures);
+  OrderingContext ctx{};
+  ctx.pos = &pos;
+  SeeCache cache{};
+  cache.clear();
+  ctx.see_cache = &cache;
+  std::array<int, kMaxMoves> scores{};
+  std::array<int, kMaxMoves> see_scores{};
+  score_moves(moves, ctx, scores, &see_scores);
+  const Move pawn_takes_rook = make_move(Square::E5, Square::D6, MoveFlag::Capture);
+  bool found = false;
+  int see_entry = 0;
+  for (std::size_t idx = 0; idx < moves.size(); ++idx) {
+    if (moves[idx] == pawn_takes_rook) {
+      found = true;
+      see_entry = see_scores[idx];
+      break;
+    }
+  }
+  REQUIRE(found);
+  REQUIRE(see_entry == kSeeUnknown);
+  const int resolved = cached_see(pos, pawn_takes_rook, &cache);
+  REQUIRE(resolved > 0);
 }
 
 }  // namespace bby::test
