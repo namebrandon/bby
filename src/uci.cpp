@@ -1052,7 +1052,6 @@ bool dispatch_command(UciState& state, std::string_view line, bool allow_shutdow
     handle_go(state, view);
   } else if (command == "stop") {
     state.worker.request_stop();
-    state.worker.wait_idle();
     send_info(state.io, "stop acknowledged");
   } else if (command == "ponderhit") {
     handle_ponderhit(state);
