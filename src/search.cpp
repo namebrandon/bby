@@ -504,7 +504,18 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
         see_scores[move_index] = see_value;
       }
       if (see_value <= 0) {
-        continue;
+        bool allow = false;
+        Undo temp;
+        pos.make(move, temp);
+        if (pos.in_check(pos.side_to_move())) {
+          allow = true;
+        } else if (creates_connected_passers(pos, move, pos.side_to_move())) {
+          allow = true;
+        }
+        pos.unmake(move, temp);
+        if (!allow) {
+          continue;
+        }
       }
     }
     if (see_value == kSeeUnknown) {
@@ -512,12 +523,10 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
       see_scores[move_index] = see_value;
     }
     bool is_check = false;
-    {
-      Undo check_undo;
-      pos.make(move, check_undo);
-      is_check = pos.in_check(pos.side_to_move());
-      pos.unmake(move, check_undo);
-    }
+    Undo check_undo;
+    pos.make(move, check_undo);
+    is_check = pos.in_check(pos.side_to_move());
+    pos.unmake(move, check_undo);
     if (see_value < 0) {
       bool allow = is_check;
       if (!allow) {
