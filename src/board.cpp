@@ -505,7 +505,7 @@ void Position::generate_moves(MoveList& out, GenStage stage) const {
   std::size_t sample_count = 0;
 
   MoveList pseudo;
-  generate_pseudo_legal(pseudo);
+  generate_pseudo_legal(pseudo, stage);
   out.clear();
 
   const Color us = side_;
@@ -1141,8 +1141,11 @@ bool Position::is_square_attacked(Square sq, Color by) const {
   return false;
 }
 
-void Position::generate_pseudo_legal(MoveList& out) const {
+void Position::generate_pseudo_legal(MoveList& out, GenStage stage) const {
   out.clear();
+
+  const bool want_captures = stage != GenStage::Quiets;
+  const bool want_quiets = stage != GenStage::Captures;
 
   const int us = color_index(side_);
   const int them = color_index(flip(side_));
@@ -1152,177 +1155,196 @@ void Position::generate_pseudo_legal(MoveList& out) const {
 
   auto emit = [&](Square from, Square to, MoveFlag flag,
                   PieceType promo = PieceType::None) {
+    const bool capture_like =
+        flag == MoveFlag::Capture || flag == MoveFlag::PromotionCapture ||
+        flag == MoveFlag::EnPassant;
+    const bool quiet_like =
+        flag == MoveFlag::Quiet || flag == MoveFlag::DoublePush ||
+        flag == MoveFlag::Promotion || flag == MoveFlag::KingCastle ||
+        flag == MoveFlag::QueenCastle;
+    if ((capture_like && !want_captures) ||
+        (quiet_like && !want_quiets)) {
+      return;
+    }
     out.push_back(make_move(from, to, flag, promo));
   };
 
   const Bitboard pawns = pieces_[us][static_cast<int>(PieceType::Pawn)];
   if (side_ == Color::White) {
-    Bitboard single = pawn_single_pushes(Color::White, pawns, empty);
-    Bitboard promotions = single & kRank8;
-    Bitboard quiets = single & ~kRank8;
-    while (quiets) {
-      const int to_idx = __builtin_ctzll(quiets);
-      quiets &= quiets - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx - 8);
-      emit(from, to, MoveFlag::Quiet);
-    }
-
-    Bitboard start_rank = pawns & kRank2;
-    Bitboard double_push = pawn_double_pushes(Color::White, start_rank, empty);
-    while (double_push) {
-      const int to_idx = __builtin_ctzll(double_push);
-      double_push &= double_push - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx - 16);
-      emit(from, to, MoveFlag::DoublePush);
-    }
-
-    while (promotions) {
-      const int to_idx = __builtin_ctzll(promotions);
-      promotions &= promotions - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx - 8);
-      for (PieceType promo : {PieceType::Queen, PieceType::Rook,
-                              PieceType::Bishop, PieceType::Knight}) {
-        emit(from, to, MoveFlag::Promotion, promo);
+    if (want_quiets) {
+      Bitboard single = pawn_single_pushes(Color::White, pawns, empty);
+      Bitboard promotions = single & kRank8;
+      Bitboard quiets = single & ~kRank8;
+      while (quiets) {
+        const int to_idx = __builtin_ctzll(quiets);
+        quiets &= quiets - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx - 8);
+        emit(from, to, MoveFlag::Quiet);
       }
-    }
 
-    Bitboard capture_left = north_west(pawns) & theirs;
-    while (capture_left) {
-      const int to_idx = __builtin_ctzll(capture_left);
-      capture_left &= capture_left - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx - 7);
-      const bool promo = rank_of(to) == Rank::R8;
-      if (promo) {
-        for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
-                                     PieceType::Bishop, PieceType::Knight}) {
-          emit(from, to, MoveFlag::PromotionCapture, promo_type);
-        }
-      } else {
-        emit(from, to, MoveFlag::Capture);
+      Bitboard start_rank = pawns & kRank2;
+      Bitboard double_push = pawn_double_pushes(Color::White, start_rank, empty);
+      while (double_push) {
+        const int to_idx = __builtin_ctzll(double_push);
+        double_push &= double_push - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx - 16);
+        emit(from, to, MoveFlag::DoublePush);
       }
-    }
 
-    Bitboard capture_right = north_east(pawns) & theirs;
-    while (capture_right) {
-      const int to_idx = __builtin_ctzll(capture_right);
-      capture_right &= capture_right - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx - 9);
-      const bool promo = rank_of(to) == Rank::R8;
-      if (promo) {
-        for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
-                                     PieceType::Bishop, PieceType::Knight}) {
-          emit(from, to, MoveFlag::PromotionCapture, promo_type);
-        }
-      } else {
-        emit(from, to, MoveFlag::Capture);
-      }
-    }
-
-    if (ep_square_ != Square::None && rank_of(ep_square_) == Rank::R6) {
-      const int to_idx = static_cast<int>(ep_square_);
-      const int file = to_idx & 7;
-      if (file > 0) {
-        const int from_idx = to_idx - 9;
-        if (from_idx >= 0 &&
-            squares_[from_idx] == make_piece(Color::White, PieceType::Pawn)) {
-          emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+      while (promotions) {
+        const int to_idx = __builtin_ctzll(promotions);
+        promotions &= promotions - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx - 8);
+        for (PieceType promo : {PieceType::Queen, PieceType::Rook,
+                                PieceType::Bishop, PieceType::Knight}) {
+          emit(from, to, MoveFlag::Promotion, promo);
         }
       }
-      if (file < 7) {
-        const int from_idx = to_idx - 7;
-        if (from_idx >= 0 &&
-            squares_[from_idx] == make_piece(Color::White, PieceType::Pawn)) {
-          emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+    }
+
+    if (want_captures) {
+      Bitboard capture_left = north_west(pawns) & theirs;
+      while (capture_left) {
+        const int to_idx = __builtin_ctzll(capture_left);
+        capture_left &= capture_left - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx - 7);
+        const bool promo = rank_of(to) == Rank::R8;
+        if (promo) {
+          for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
+                                       PieceType::Bishop, PieceType::Knight}) {
+            emit(from, to, MoveFlag::PromotionCapture, promo_type);
+          }
+        } else {
+          emit(from, to, MoveFlag::Capture);
+        }
+      }
+
+      Bitboard capture_right = north_east(pawns) & theirs;
+      while (capture_right) {
+        const int to_idx = __builtin_ctzll(capture_right);
+        capture_right &= capture_right - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx - 9);
+        const bool promo = rank_of(to) == Rank::R8;
+        if (promo) {
+          for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
+                                       PieceType::Bishop, PieceType::Knight}) {
+            emit(from, to, MoveFlag::PromotionCapture, promo_type);
+          }
+        } else {
+          emit(from, to, MoveFlag::Capture);
+        }
+      }
+
+      if (ep_square_ != Square::None && rank_of(ep_square_) == Rank::R6) {
+        const int to_idx = static_cast<int>(ep_square_);
+        const int file = to_idx & 7;
+        if (file > 0) {
+          const int from_idx = to_idx - 9;
+          if (from_idx >= 0 &&
+              squares_[from_idx] == make_piece(Color::White, PieceType::Pawn)) {
+            emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+          }
+        }
+        if (file < 7) {
+          const int from_idx = to_idx - 7;
+          if (from_idx >= 0 &&
+              squares_[from_idx] == make_piece(Color::White, PieceType::Pawn)) {
+            emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+          }
         }
       }
     }
   } else {
-    Bitboard single = pawn_single_pushes(Color::Black, pawns, empty);
-    Bitboard promotions = single & kRank1;
-    Bitboard quiets = single & ~kRank1;
-    while (quiets) {
-      const int to_idx = __builtin_ctzll(quiets);
-      quiets &= quiets - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx + 8);
-      emit(from, to, MoveFlag::Quiet);
-    }
-
-    Bitboard start_rank = pawns & kRank7;
-    Bitboard double_push = pawn_double_pushes(Color::Black, start_rank, empty);
-    while (double_push) {
-      const int to_idx = __builtin_ctzll(double_push);
-      double_push &= double_push - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx + 16);
-      emit(from, to, MoveFlag::DoublePush);
-    }
-
-    while (promotions) {
-      const int to_idx = __builtin_ctzll(promotions);
-      promotions &= promotions - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx + 8);
-      for (PieceType promo : {PieceType::Queen, PieceType::Rook,
-                              PieceType::Bishop, PieceType::Knight}) {
-        emit(from, to, MoveFlag::Promotion, promo);
+    if (want_quiets) {
+      Bitboard single = pawn_single_pushes(Color::Black, pawns, empty);
+      Bitboard promotions = single & kRank1;
+      Bitboard quiets = single & ~kRank1;
+      while (quiets) {
+        const int to_idx = __builtin_ctzll(quiets);
+        quiets &= quiets - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx + 8);
+        emit(from, to, MoveFlag::Quiet);
       }
-    }
 
-    Bitboard capture_left = south_west(pawns) & theirs;
-    while (capture_left) {
-      const int to_idx = __builtin_ctzll(capture_left);
-      capture_left &= capture_left - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx + 9);
-      const bool promo = rank_of(to) == Rank::R1;
-      if (promo) {
-        for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
-                                     PieceType::Bishop, PieceType::Knight}) {
-          emit(from, to, MoveFlag::PromotionCapture, promo_type);
-        }
-      } else {
-        emit(from, to, MoveFlag::Capture);
+      Bitboard start_rank = pawns & kRank7;
+      Bitboard double_push = pawn_double_pushes(Color::Black, start_rank, empty);
+      while (double_push) {
+        const int to_idx = __builtin_ctzll(double_push);
+        double_push &= double_push - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx + 16);
+        emit(from, to, MoveFlag::DoublePush);
       }
-    }
 
-    Bitboard capture_right = south_east(pawns) & theirs;
-    while (capture_right) {
-      const int to_idx = __builtin_ctzll(capture_right);
-      capture_right &= capture_right - 1;
-      const Square to = static_cast<Square>(to_idx);
-      const Square from = static_cast<Square>(to_idx + 7);
-      const bool promo = rank_of(to) == Rank::R1;
-      if (promo) {
-        for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
-                                     PieceType::Bishop, PieceType::Knight}) {
-          emit(from, to, MoveFlag::PromotionCapture, promo_type);
-        }
-      } else {
-        emit(from, to, MoveFlag::Capture);
-      }
-    }
-
-    if (ep_square_ != Square::None && rank_of(ep_square_) == Rank::R3) {
-      const int to_idx = static_cast<int>(ep_square_);
-      const int file = to_idx & 7;
-      if (file > 0) {
-        const int from_idx = to_idx + 7;
-        if (from_idx < 64 &&
-            squares_[from_idx] == make_piece(Color::Black, PieceType::Pawn)) {
-          emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+      while (promotions) {
+        const int to_idx = __builtin_ctzll(promotions);
+        promotions &= promotions - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx + 8);
+        for (PieceType promo : {PieceType::Queen, PieceType::Rook,
+                                PieceType::Bishop, PieceType::Knight}) {
+          emit(from, to, MoveFlag::Promotion, promo);
         }
       }
-      if (file < 7) {
-        const int from_idx = to_idx + 9;
-        if (from_idx < 64 &&
-            squares_[from_idx] == make_piece(Color::Black, PieceType::Pawn)) {
-          emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+    }
+
+    if (want_captures) {
+      Bitboard capture_left = south_west(pawns) & theirs;
+      while (capture_left) {
+        const int to_idx = __builtin_ctzll(capture_left);
+        capture_left &= capture_left - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx + 9);
+        const bool promo = rank_of(to) == Rank::R1;
+        if (promo) {
+          for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
+                                       PieceType::Bishop, PieceType::Knight}) {
+            emit(from, to, MoveFlag::PromotionCapture, promo_type);
+          }
+        } else {
+          emit(from, to, MoveFlag::Capture);
+        }
+      }
+
+      Bitboard capture_right = south_east(pawns) & theirs;
+      while (capture_right) {
+        const int to_idx = __builtin_ctzll(capture_right);
+        capture_right &= capture_right - 1;
+        const Square to = static_cast<Square>(to_idx);
+        const Square from = static_cast<Square>(to_idx + 7);
+        const bool promo = rank_of(to) == Rank::R1;
+        if (promo) {
+          for (PieceType promo_type : {PieceType::Queen, PieceType::Rook,
+                                       PieceType::Bishop, PieceType::Knight}) {
+            emit(from, to, MoveFlag::PromotionCapture, promo_type);
+          }
+        } else {
+          emit(from, to, MoveFlag::Capture);
+        }
+      }
+
+      if (ep_square_ != Square::None && rank_of(ep_square_) == Rank::R3) {
+        const int to_idx = static_cast<int>(ep_square_);
+        const int file = to_idx & 7;
+        if (file > 0) {
+          const int from_idx = to_idx + 7;
+          if (from_idx < 64 &&
+              squares_[from_idx] == make_piece(Color::Black, PieceType::Pawn)) {
+            emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+          }
+        }
+        if (file < 7) {
+          const int from_idx = to_idx + 9;
+          if (from_idx < 64 &&
+              squares_[from_idx] == make_piece(Color::Black, PieceType::Pawn)) {
+            emit(static_cast<Square>(from_idx), ep_square_, MoveFlag::EnPassant);
+          }
         }
       }
     }
@@ -1334,6 +1356,11 @@ void Position::generate_pseudo_legal(MoveList& out) const {
     knights &= knights - 1;
     const Square from = static_cast<Square>(from_idx);
     Bitboard moves = knight_attacks(from) & ~ours;
+    if (!want_captures) {
+      moves &= ~theirs;
+    } else if (!want_quiets) {
+      moves &= theirs;
+    }
     while (moves) {
       const int to_idx = __builtin_ctzll(moves);
       moves &= moves - 1;
@@ -1349,6 +1376,11 @@ void Position::generate_pseudo_legal(MoveList& out) const {
       pieces &= pieces - 1;
       const Square from = static_cast<Square>(from_idx);
       Bitboard moves = attack_fn(from, occupied_all_) & ~ours;
+      if (!want_captures) {
+        moves &= ~theirs;
+      } else if (!want_quiets) {
+        moves &= theirs;
+      }
       while (moves) {
         const int to_idx = __builtin_ctzll(moves);
         moves &= moves - 1;
@@ -1373,6 +1405,11 @@ void Position::generate_pseudo_legal(MoveList& out) const {
     const int from_idx = __builtin_ctzll(king_bb);
     const Square from = static_cast<Square>(from_idx);
     Bitboard moves = king_attacks(from) & ~ours;
+    if (!want_captures) {
+      moves &= ~theirs;
+    } else if (!want_quiets) {
+      moves &= theirs;
+    }
     while (moves) {
       const int to_idx = __builtin_ctzll(moves);
       moves &= moves - 1;
@@ -1381,38 +1418,40 @@ void Position::generate_pseudo_legal(MoveList& out) const {
       emit(from, to, capture ? MoveFlag::Capture : MoveFlag::Quiet);
     }
 
-    const Color enemy = flip(side_);
-    if (side_ == Color::White) {
-      if ((castling_ & CastleWK) &&
-          !(occupancy() & (bit(Square::F1) | bit(Square::G1))) &&
-          !is_square_attacked(Square::E1, enemy) &&
-          !is_square_attacked(Square::F1, enemy) &&
-          !is_square_attacked(Square::G1, enemy)) {
-        emit(Square::E1, Square::G1, MoveFlag::KingCastle);
-      }
-      if ((castling_ & CastleWQ) &&
-          !(occupancy() &
-            (bit(Square::D1) | bit(Square::C1) | bit(Square::B1))) &&
-          !is_square_attacked(Square::E1, enemy) &&
-          !is_square_attacked(Square::D1, enemy) &&
-          !is_square_attacked(Square::C1, enemy)) {
-        emit(Square::E1, Square::C1, MoveFlag::QueenCastle);
-      }
-    } else {
-      if ((castling_ & CastleBK) &&
-          !(occupancy() & (bit(Square::F8) | bit(Square::G8))) &&
-          !is_square_attacked(Square::E8, enemy) &&
-          !is_square_attacked(Square::F8, enemy) &&
-          !is_square_attacked(Square::G8, enemy)) {
-        emit(Square::E8, Square::G8, MoveFlag::KingCastle);
-      }
-      if ((castling_ & CastleBQ) &&
-          !(occupancy() &
-            (bit(Square::D8) | bit(Square::C8) | bit(Square::B8))) &&
-          !is_square_attacked(Square::E8, enemy) &&
-          !is_square_attacked(Square::D8, enemy) &&
-          !is_square_attacked(Square::C8, enemy)) {
-        emit(Square::E8, Square::C8, MoveFlag::QueenCastle);
+    if (want_quiets) {
+      const Color enemy = flip(side_);
+      if (side_ == Color::White) {
+        if ((castling_ & CastleWK) &&
+            !(occupancy() & (bit(Square::F1) | bit(Square::G1))) &&
+            !is_square_attacked(Square::E1, enemy) &&
+            !is_square_attacked(Square::F1, enemy) &&
+            !is_square_attacked(Square::G1, enemy)) {
+          emit(Square::E1, Square::G1, MoveFlag::KingCastle);
+        }
+        if ((castling_ & CastleWQ) &&
+            !(occupancy() &
+              (bit(Square::D1) | bit(Square::C1) | bit(Square::B1))) &&
+            !is_square_attacked(Square::E1, enemy) &&
+            !is_square_attacked(Square::D1, enemy) &&
+            !is_square_attacked(Square::C1, enemy)) {
+          emit(Square::E1, Square::C1, MoveFlag::QueenCastle);
+        }
+      } else {
+        if ((castling_ & CastleBK) &&
+            !(occupancy() & (bit(Square::F8) | bit(Square::G8))) &&
+            !is_square_attacked(Square::E8, enemy) &&
+            !is_square_attacked(Square::F8, enemy) &&
+            !is_square_attacked(Square::G8, enemy)) {
+          emit(Square::E8, Square::G8, MoveFlag::KingCastle);
+        }
+        if ((castling_ & CastleBQ) &&
+            !(occupancy() &
+              (bit(Square::D8) | bit(Square::C8) | bit(Square::B8))) &&
+            !is_square_attacked(Square::E8, enemy) &&
+            !is_square_attacked(Square::D8, enemy) &&
+            !is_square_attacked(Square::C8, enemy)) {
+          emit(Square::E8, Square::C8, MoveFlag::QueenCastle);
+        }
       }
     }
   }

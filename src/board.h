@@ -62,7 +62,7 @@ private:
   [[nodiscard]] std::uint64_t compute_zobrist() const;
   bool is_square_attacked(Square sq, Color by) const;
   void generate_pseudo_legal_cb(void (*cb)(Move, void*), void* ctx) const;
-  void generate_pseudo_legal(MoveList& out) const;
+  void generate_pseudo_legal(MoveList& out, GenStage stage) const;
   Bitboard pinned_mask(Color us, std::array<Bitboard, 64>& pin_masks) const;
   Bitboard attacked_squares(Color by) const;
   bool in_double_check(Color side, Bitboard& checkers) const;
