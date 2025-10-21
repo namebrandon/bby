@@ -536,6 +536,11 @@ void handle_ponderhit(UciState& state) {
 }
 
 void handle_position(UciState& state, std::string_view args) {
+  if (state.worker.is_busy()) {
+    state.worker.request_stop();
+    state.worker.wait_idle();
+  }
+
   std::string_view view = args;
   std::string token = consume_token(view);
   if (token == "startpos" || token.empty()) {
