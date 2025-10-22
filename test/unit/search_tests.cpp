@@ -190,7 +190,7 @@ TEST_CASE("Search returns multiple PV lines when MultiPV requested", "[search][m
 TEST_CASE("Search applies late move reductions on quiet moves", "[search][lmr]") {
   Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
   Limits limits;
-  limits.depth = 4;
+  limits.depth = 5;
   limits.lmr_min_depth = 1;
   limits.lmr_min_move = 1;
   limits.enable_null_move = false;
@@ -198,6 +198,7 @@ TEST_CASE("Search applies late move reductions on quiet moves", "[search][lmr]")
   const auto result = search(pos, limits);
   REQUIRE(result.depth >= 3);
   REQUIRE(result.lmr_reductions > 0);
+  REQUIRE(result.quiet_penalties > 0);
 }
 
 TEST_CASE("Root moves avoid late move reductions", "[search][lmr][root]") {

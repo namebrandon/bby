@@ -42,6 +42,7 @@ struct SearchResult {
   int lmr_reductions{0};
   int recapture_extensions{0};
   int check_extensions{0};
+  int quiet_penalties{0};
   std::int64_t elapsed_ms{0};
   int hashfull{0};
   bool tt_hit{false};

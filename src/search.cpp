@@ -6,6 +6,7 @@
 #include <bit>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
 #include <iomanip>
 #include <numeric>
 #include <sstream>
@@ -28,6 +29,38 @@ constexpr Score kAspirationBase = 64;
 constexpr Score kAspirationScale = 16;
 constexpr Score kStaticFutilitySlack = 128;
 constexpr Score kRazoringSlack = 512;
+constexpr int kMaxLmrDepth = 64;
+constexpr int kMaxLmrMoves = 64;
+constexpr int kHistoryReductionScale = 8192;
+using LmrPlane = std::array<std::array<int, kMaxLmrMoves>, kMaxLmrDepth>;
+
+const std::array<LmrPlane, 2>& lmr_tables() {
+  static const std::array<LmrPlane, 2> tables = []() {
+    std::array<LmrPlane, 2> tbl{};
+    for (int pv = 0; pv < 2; ++pv) {
+      const double divisor = pv ? 2.25 : 1.6;
+      const double offset = pv ? 0.15 : 0.35;
+      auto& plane = tbl[static_cast<std::size_t>(pv)];
+      for (int depth = 0; depth < kMaxLmrDepth; ++depth) {
+        for (int moves = 0; moves < kMaxLmrMoves; ++moves) {
+          int value = 0;
+          if (depth >= 2 && moves >= 2) {
+            const double d = static_cast<double>(depth);
+            const double m = static_cast<double>(moves);
+            const double reduction = std::log(d) * std::log(m) / divisor + offset;
+            if (reduction > 0.0) {
+              value = static_cast<int>(std::lround(reduction));
+            }
+          }
+          plane[static_cast<std::size_t>(depth)][static_cast<std::size_t>(moves)] =
+              std::max(0, value);
+        }
+      }
+    }
+    return tbl;
+  }();
+  return tables;
+}
 struct SearchTables {
   SearchTables() : tt(kDefaultTTMegabytes) {}
 
@@ -91,6 +124,7 @@ struct SearchState {
   int check_extension_depth{3};
   int recapture_extensions{0};
   int check_extensions{0};
+  int quiet_penalties{0};
   std::int64_t nodes{0};
   std::int64_t node_cap{-1};
   bool aborted{false};
@@ -560,6 +594,11 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     }
   }
 
+  if (!stack_frame.has_static_eval) {
+    ensure_static_eval();
+  }
+  const bool improving_lmr = state.stack.is_improving(ply);
+
   MoveList moves;
   pos.generate_moves(moves, GenStage::All);
   if (moves.size() == 0) {
@@ -656,6 +695,8 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
   Move best_move{};
   Score best_score = -kEvalInfinity;
+  std::array<Move, kMaxMoves> failed_quiets{};
+  int failed_quiet_count = 0;
 
   const std::size_t move_count = moves.size();
   std::size_t processed_moves = 0;
@@ -674,6 +715,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     }
     const bool is_primary_move = (processed_moves == 0);
     const Color moving_side = pos.side_to_move();
+    const bool quiet = is_quiet_move(move);
+    const Score alpha_before_move = alpha;
+    const bool cut_node = alpha > alpha_orig;
     const Move parent_move = stack_frame.parent_move;
     const PieceType parent_capture = stack_frame.captured;
     const bool singular_hit = singular_extension && move == tt_entry.best_move;
@@ -704,19 +748,28 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     const bool root_node = (ply == 0);
     const bool allow_lmr = !is_primary_move && !in_check && extension == 0 &&
                            (!in_pv || root_node);
-    const bool allow_reduction = allow_lmr && !root_node;
+    const bool allow_reduction = allow_lmr && !root_node && quiet;
     if (allow_reduction && next_depth > 1 && depth >= state.lmr_min_depth &&
-        static_cast<int>(processed_moves) + 1 >= state.lmr_min_move && is_quiet_move(move)) {
-      const int move_order = static_cast<int>(processed_moves);
+        static_cast<int>(processed_moves) + 1 >= state.lmr_min_move) {
+      const auto& lmr_table = lmr_tables();
+      const int depth_idx = std::min(depth, kMaxLmrDepth - 1);
+      const int move_order = std::min(static_cast<int>(processed_moves) + 1, kMaxLmrMoves - 1);
       const int history_score = state.history.get(moving_side, move);
-      reduction = 1;
-      reduction += std::max(0, move_order - 2) / 3;
-      reduction += std::max(0, depth - 4) / 3;
-      if (history_score < 0) {
-        reduction += 1;
+      int base = lmr_table[in_pv ? 1 : 0][static_cast<std::size_t>(depth_idx)]
+                                       [static_cast<std::size_t>(move_order)];
+      if (!improving_lmr && base > 0) {
+        base += 1;
       }
-      const int max_reduction = std::max(1, next_depth - 1);
-      reduction = std::min(reduction, max_reduction);
+      if (cut_node) {
+        base += 1;
+      }
+      if (history_score > 0) {
+        base -= history_score / kHistoryReductionScale;
+      } else if (history_score < 0) {
+        base += (-history_score) / kHistoryReductionScale;
+      }
+      base = std::clamp(base, 0, next_depth - 1);
+      reduction = base;
     } else if (allow_lmr && root_node && trace_search) {
       std::ostringstream oss;
       oss << "trace search lmr skip-root"
@@ -813,6 +866,11 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     pos.unmake(move, undo);
     ++processed_moves;
 
+    if (quiet && score <= alpha_before_move &&
+        failed_quiet_count < static_cast<int>(failed_quiets.size())) {
+      failed_quiets[static_cast<std::size_t>(failed_quiet_count++)] = move;
+    }
+
     if (state.aborted) {
       break;
     }
@@ -827,18 +885,24 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
     if (score > alpha) {
       alpha = score;
-      if (is_quiet_move(move)) {
+      if (quiet) {
         const int bonus = kQuietHistoryBonus * depth * depth;
         update_history(state, pos.side_to_move(), move, bonus);
       }
     }
 
     if (alpha >= beta) {
-      if (is_quiet_move(move)) {
+      if (quiet) {
         update_killers(state, ply, move);
         const int bonus = kQuietHistoryBonus * depth * depth;
         update_history(state, pos.side_to_move(), move, bonus);
       }
+      const int penalty = kQuietHistoryBonus * depth;
+      for (int idx = 0; idx < failed_quiet_count; ++idx) {
+        update_history(state, moving_side, failed_quiets[static_cast<std::size_t>(idx)],
+                       -penalty);
+      }
+      state.quiet_penalties += failed_quiet_count;
       break;
     }
   }
@@ -1064,6 +1128,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.check_extension_depth = std::clamp(limits.check_extension_depth, 0, 16);
   state.recapture_extensions = 0;
   state.check_extensions = 0;
+  state.quiet_penalties = 0;
   state.start_time = std::chrono::steady_clock::now();
   const TimeBudget time_budget = compute_time_budget(limits, root.side_to_move());
   state.hard_time_ms = time_budget.hard_ms;
@@ -1309,6 +1374,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   result.lmr_reductions = state.lmr_reductions;
   result.recapture_extensions = state.recapture_extensions;
   result.check_extensions = state.check_extensions;
+  result.quiet_penalties = state.quiet_penalties;
   const auto finish_time = std::chrono::steady_clock::now();
   const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               finish_time - state.start_time)
