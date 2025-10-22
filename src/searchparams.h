@@ -6,8 +6,8 @@
 
 namespace bby {
 
-inline constexpr int kLmrMinDepthDefault = 4;
-inline constexpr int kLmrMinMoveDefault = 3;
+inline constexpr int kLmrMinDepthDefault = 2;
+inline constexpr int kLmrMinMoveDefault = 2;
 
 struct Limits {
   std::int64_t movetime_ms{-1};
