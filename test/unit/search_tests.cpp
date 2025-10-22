@@ -195,15 +195,47 @@ TEST_CASE("Search applies late move reductions on quiet moves", "[search][lmr]")
   set_trace_topic(TraceTopic::Search, true);
   Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
   Limits limits;
-  limits.depth = 3;
+  limits.depth = 4;
+  limits.lmr_min_depth = 1;
+  limits.lmr_min_move = 1;
 
   const auto result = search(pos, limits);
-  REQUIRE(result.depth >= 2);
+  REQUIRE(result.depth >= 3);
 
   const auto lmr_hit = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
     return payload.find("lmr reduce") != std::string::npos;
   });
   REQUIRE(lmr_hit != payloads.end());
+
+  set_trace_topic(TraceTopic::Search, false);
+  set_trace_writer(nullptr);
+  g_trace_sink = nullptr;
+}
+
+TEST_CASE("Root moves avoid late move reductions", "[search][lmr][root]") {
+  std::vector<std::string> payloads;
+  g_trace_sink = &payloads;
+  set_trace_writer(&capture_trace);
+
+  set_trace_topic(TraceTopic::Search, true);
+  Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
+  Limits limits;
+  limits.depth = 3;
+  limits.lmr_min_depth = 1;
+  limits.lmr_min_move = 1;
+
+  const auto result = search(pos, limits);
+  REQUIRE(result.depth == 3);
+
+  const auto root_skip = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
+    return payload.find("lmr skip-root") != std::string::npos;
+  });
+  REQUIRE(root_skip != payloads.end());
+
+  const auto root_reduce = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
+    return payload.find("lmr reduce") != std::string::npos && payload.find("ply=0") != std::string::npos;
+  });
+  REQUIRE(root_reduce == payloads.end());
 
   set_trace_topic(TraceTopic::Search, false);
   set_trace_writer(nullptr);

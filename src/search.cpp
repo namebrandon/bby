@@ -544,9 +544,11 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
     int reduction = 0;
+    const bool root_node = (ply == 0);
     const bool allow_lmr = !is_primary_move && !in_check && extension == 0 &&
-                           (!in_pv || ply == 0);
-    if (allow_lmr && next_depth > 1 && depth >= state.lmr_min_depth &&
+                           (!in_pv || root_node);
+    const bool allow_reduction = allow_lmr && !root_node;
+    if (allow_reduction && next_depth > 1 && depth >= state.lmr_min_depth &&
         static_cast<int>(processed_moves) + 1 >= state.lmr_min_move && is_quiet_move(move)) {
       const int move_order = static_cast<int>(processed_moves);
       const int history_score = state.history.get(moving_side, move);
@@ -558,6 +560,12 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       }
       const int max_reduction = std::max(1, next_depth - 1);
       reduction = std::min(reduction, max_reduction);
+    } else if (allow_lmr && root_node && trace_search) {
+      std::ostringstream oss;
+      oss << "trace search lmr skip-root"
+          << " move=" << move_to_uci(move)
+          << " depth=" << depth;
+      trace_emit(TraceTopic::Search, oss.str());
     }
 
     const bool gives_check = pos.in_check(pos.side_to_move());
@@ -842,9 +850,6 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.see_cache.clear();
   state.nodes = 0;
   state.node_cap = limits.nodes;
-  if (limits.depth <= 0 && state.node_cap < 0) {
-    state.node_cap = 200000;
-  }
   state.aborted = false;
   state.root_exclude_count = 0;
   state.lmr_min_depth = std::max(1, limits.lmr_min_depth);
