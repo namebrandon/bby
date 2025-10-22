@@ -1444,17 +1444,6 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
           result.best = preferred.best;
           result.pv = preferred.pv;
           result.eval = preferred.eval;
-        } else {
-          PVLine preferred = previous_iteration.lines.empty()
-                                 ? PVLine{previous_iteration.best, previous_iteration.pv, previous_iteration.eval}
-                                 : previous_iteration.lines.front();
-          result.lines.insert(result.lines.begin(), preferred);
-          if (result.lines.size() > desired_count) {
-            result.lines.resize(desired_count);
-          }
-          result.best = preferred.best;
-          result.pv = preferred.pv;
-          result.eval = preferred.eval;
         }
       }
       last_completed = result;
