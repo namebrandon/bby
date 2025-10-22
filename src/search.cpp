@@ -26,6 +26,8 @@ constexpr int kQuietHistoryBonus = 128;
 constexpr int kNullMoveReduction = 2;
 constexpr Score kAspirationBase = 64;
 constexpr Score kAspirationScale = 16;
+constexpr Score kStaticFutilitySlack = 128;
+constexpr Score kRazoringSlack = 512;
 struct SearchTables {
   SearchTables() : tt(kDefaultTTMegabytes) {}
 
@@ -357,7 +359,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     have_static_eval = true;
     const Score margin =
         static_cast<Score>(state.static_futility_margin * std::max(depth, 1));
-    Score futility_value = static_eval + margin;
+    Score futility_value = static_eval + margin - kStaticFutilitySlack;
     futility_value = std::clamp(futility_value, static_cast<Score>(-kEvalInfinity),
                                 static_cast<Score>(kEvalInfinity));
     if (futility_value <= alpha) {
@@ -386,7 +388,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     const Score margin =
         static_cast<Score>(state.razor_margin * std::max(depth, 1));
     const Score threshold =
-        std::clamp(static_eval + margin, static_cast<Score>(-kEvalInfinity),
+        std::clamp(static_eval + margin - kRazoringSlack, static_cast<Score>(-kEvalInfinity),
                    static_cast<Score>(kEvalInfinity));
     if (threshold <= alpha) {
       if (trace_search) {
@@ -403,7 +405,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       if (state.aborted) {
         return razor_score;
       }
-      if (razor_score <= alpha) {
+      if (razor_score <= alpha + kRazoringSlack) {
         ++state.razor_prunes;
         return razor_score;
       }
@@ -542,7 +544,8 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
     int reduction = 0;
-    const bool allow_lmr = !is_primary_move && !in_pv && !in_check && extension == 0;
+    const bool allow_lmr = !is_primary_move && !in_check && extension == 0 &&
+                           (!in_pv || ply == 0);
     if (allow_lmr && next_depth > 1 && depth >= state.lmr_min_depth &&
         static_cast<int>(processed_moves) + 1 >= state.lmr_min_move && is_quiet_move(move)) {
       const int move_order = static_cast<int>(processed_moves);
@@ -553,7 +556,8 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       if (history_score < 0) {
         reduction += 1;
       }
-      reduction = std::min(reduction, next_depth - 1);
+      const int max_reduction = std::max(1, next_depth - 1);
+      reduction = std::min(reduction, max_reduction);
     }
 
     const bool gives_check = pos.in_check(pos.side_to_move());
@@ -763,13 +767,20 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
   score_moves(moves, ordering, move_scores);
 
   const std::size_t move_count = moves.size();
-  constexpr int kDeltaMargin = 210;
+  constexpr int kDeltaMargin = 128;
   for (std::size_t move_index = 0; move_index < move_count; ++move_index) {
     select_best_move(moves, move_scores, move_index, move_count);
     const Move move = moves[move_index];
     const int margin = capture_margin(pos, move);
-    const bool delta_pruned =
-        stand_pat + margin + kDeltaMargin < alpha;
+    const int see_gain = cached_see(pos, move, ordering.see_cache);
+    bool delta_pruned = false;
+    if (see_gain < 0) {
+      if (stand_pat + see_gain + kDeltaMargin < alpha) {
+        delta_pruned = true;
+      }
+    } else if (stand_pat + see_gain + kDeltaMargin < alpha) {
+      delta_pruned = true;
+    }
     qsearch_delta_prune_probe(pos, move, stand_pat, alpha, margin, kDeltaMargin, ply,
                               delta_pruned);
     if (trace_q) {
@@ -778,8 +789,9 @@ Score qsearch(Position& pos, Score alpha, Score beta, SearchTables& tables,
           << " ply=" << ply
           << " move=" << move_to_uci(move)
           << " margin=" << margin
+          << " see=" << see_gain
           << " delta=" << kDeltaMargin
-          << " threshold=" << (stand_pat + margin + kDeltaMargin)
+          << " threshold=" << (stand_pat + see_gain + kDeltaMargin)
           << " alpha=" << alpha
           << " pruned=" << (delta_pruned ? 1 : 0);
       trace_emit(TraceTopic::QSearch, oss.str());
@@ -830,6 +842,9 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.see_cache.clear();
   state.nodes = 0;
   state.node_cap = limits.nodes;
+  if (limits.depth <= 0 && state.node_cap < 0) {
+    state.node_cap = 200000;
+  }
   state.aborted = false;
   state.root_exclude_count = 0;
   state.lmr_min_depth = std::max(1, limits.lmr_min_depth);
@@ -862,7 +877,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
 
   emit_search_trace_start(root, limits);
 
-  const int max_depth = limits.depth > 0 ? limits.depth : (kMaxPly - 1);
+  const int max_depth = limits.depth > 0 ? limits.depth : 1;
   const int requested_multipv = std::clamp(limits.multipv > 0 ? limits.multipv : 1, 1,
                                           static_cast<int>(kMaxMoves));
 
