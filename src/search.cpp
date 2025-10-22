@@ -35,6 +35,30 @@ constexpr int kMaxLmrMoves = 64;
 constexpr int kHistoryReductionScale = 8192;
 using LmrPlane = std::array<std::array<int, kMaxLmrMoves>, kMaxLmrDepth>;
 
+struct OpeningHistorySeed {
+  Color color;
+  Move move;
+  int bonus;
+};
+
+// Seed classical center pawn pushes so they surface early in move ordering.
+constexpr std::array<OpeningHistorySeed, 8> kOpeningHistorySeeds = {{
+    {Color::White, make_move(Square::E2, Square::E4, MoveFlag::DoublePush), 16'000},
+    {Color::White, make_move(Square::D2, Square::D4, MoveFlag::DoublePush), 16'000},
+    {Color::White, make_move(Square::C2, Square::C4, MoveFlag::DoublePush), 12'000},
+    {Color::White, make_move(Square::F2, Square::F4, MoveFlag::DoublePush), 10'000},
+    {Color::Black, make_move(Square::E7, Square::E5, MoveFlag::DoublePush), 16'000},
+    {Color::Black, make_move(Square::D7, Square::D5, MoveFlag::DoublePush), 16'000},
+    {Color::Black, make_move(Square::C7, Square::C5, MoveFlag::DoublePush), 12'000},
+    {Color::Black, make_move(Square::F7, Square::F5, MoveFlag::DoublePush), 10'000},
+}};
+
+void seed_opening_history(HistoryTable& history) {
+  for (const auto& seed : kOpeningHistorySeeds) {
+    history.add(seed.color, seed.move, seed.bonus);
+  }
+}
+
 const std::array<LmrPlane, 2>& lmr_tables() {
   static const std::array<LmrPlane, 2> tables = []() {
     std::array<LmrPlane, 2> tbl{};
@@ -1145,6 +1169,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
                     const SearchProgressFn* progress, const CurrmoveFn* currmove) {
   SearchTables tables;
   SearchState state;
+  seed_opening_history(state.history);
   state.counter_history = std::make_unique<CounterHistory>();
   state.continuation_history = std::make_unique<ContinuationHistory>();
   state.see_cache.clear();
@@ -1394,6 +1419,8 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
 
     const int available = std::min(active_multipv, produced_lines);
     if (available > 0) {
+      const bool had_previous = have_completed;
+      const SearchResult previous_iteration = last_completed;
       result.lines.assign(multipv_lines.begin(), multipv_lines.begin() + available);
       const PVLine& primary = result.lines.front();
       result.best = primary.best;
@@ -1401,6 +1428,35 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
       result.eval = primary.eval;
       result.seldepth = state.seldepth;
       result.hashfull = tables.tt.hashfull();
+      const std::size_t desired_count = static_cast<std::size_t>(available);
+      if (result.lines.size() > desired_count) {
+        result.lines.resize(desired_count);
+      }
+      if (had_previous && !previous_iteration.best.is_null() &&
+          previous_iteration.eval == result.eval && result.best != previous_iteration.best) {
+        auto it = std::find_if(result.lines.begin(), result.lines.end(),
+                               [&](const PVLine& line) { return line.best == previous_iteration.best; });
+        if (it != result.lines.end()) {
+          if (it != result.lines.begin()) {
+            std::rotate(result.lines.begin(), it, it + 1);
+          }
+          const PVLine& preferred = result.lines.front();
+          result.best = preferred.best;
+          result.pv = preferred.pv;
+          result.eval = preferred.eval;
+        } else {
+          PVLine preferred = previous_iteration.lines.empty()
+                                 ? PVLine{previous_iteration.best, previous_iteration.pv, previous_iteration.eval}
+                                 : previous_iteration.lines.front();
+          result.lines.insert(result.lines.begin(), preferred);
+          if (result.lines.size() > desired_count) {
+            result.lines.resize(desired_count);
+          }
+          result.best = preferred.best;
+          result.pv = preferred.pv;
+          result.eval = preferred.eval;
+        }
+      }
       last_completed = result;
       have_completed = true;
       if (state.progress != nullptr) {
