@@ -92,23 +92,20 @@ constexpr std::string_view kStartPositionFen =
     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
 
 std::string consume_token(std::string_view& view) {
-  std::size_t idx = 0;
-  while (idx < view.size() &&
-         std::isspace(static_cast<unsigned char>(view[idx]))) {
-    ++idx;
-  }
-  view.remove_prefix(idx);
-  if (view.empty()) {
+  const auto first = view.find_first_not_of(' ');
+  if (first == std::string_view::npos) {
+    view = std::string_view{};
     return {};
   }
-  std::size_t end = 0;
-  while (end < view.size() &&
-         !std::isspace(static_cast<unsigned char>(view[end]))) {
-    ++end;
+  view.remove_prefix(first);
+  const auto end = view.find(' ');
+  const auto token = view.substr(0, end);
+  if (end == std::string_view::npos) {
+    view = std::string_view{};
+  } else {
+    view.remove_prefix(end + 1);
   }
-  std::string token(view.substr(0, end));
-  view.remove_prefix(end);
-  return token;
+  return std::string(token);
 }
 
 std::optional<std::int64_t> parse_int(std::string_view token) {
