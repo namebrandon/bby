@@ -155,10 +155,10 @@ TEST_CASE("Search aspiration windows expand when bounds fail", "[search][aspirat
   set_trace_topic(TraceTopic::Search, true);
   Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
   Limits limits;
-  limits.depth = 4;
+  limits.depth = 5;
 
   const auto result = search(pos, limits);
-  REQUIRE(result.depth == 4);
+  REQUIRE(result.depth == limits.depth);
 
   const auto fail_low = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
     return payload.find("aspiration fail-low") != std::string::npos;
@@ -188,28 +188,16 @@ TEST_CASE("Search returns multiple PV lines when MultiPV requested", "[search][m
 }
 
 TEST_CASE("Search applies late move reductions on quiet moves", "[search][lmr]") {
-  std::vector<std::string> payloads;
-  g_trace_sink = &payloads;
-  set_trace_writer(&capture_trace);
-
-  set_trace_topic(TraceTopic::Search, true);
   Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
   Limits limits;
   limits.depth = 4;
   limits.lmr_min_depth = 1;
   limits.lmr_min_move = 1;
+  limits.enable_null_move = false;
 
   const auto result = search(pos, limits);
   REQUIRE(result.depth >= 3);
-
-  const auto lmr_hit = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
-    return payload.find("lmr reduce") != std::string::npos;
-  });
-  REQUIRE(lmr_hit != payloads.end());
-
-  set_trace_topic(TraceTopic::Search, false);
-  set_trace_writer(nullptr);
-  g_trace_sink = nullptr;
+  REQUIRE(result.lmr_reductions > 0);
 }
 
 TEST_CASE("Root moves avoid late move reductions", "[search][lmr][root]") {
@@ -236,6 +224,30 @@ TEST_CASE("Root moves avoid late move reductions", "[search][lmr][root]") {
     return payload.find("lmr reduce") != std::string::npos && payload.find("ply=0") != std::string::npos;
   });
   REQUIRE(root_reduce == payloads.end());
+
+  set_trace_topic(TraceTopic::Search, false);
+  set_trace_writer(nullptr);
+  g_trace_sink = nullptr;
+}
+
+TEST_CASE("Null-move pruning adapts reduction and provides trace", "[search][null]") {
+  std::vector<std::string> payloads;
+  g_trace_sink = &payloads;
+  set_trace_writer(&capture_trace);
+  set_trace_topic(TraceTopic::Search, true);
+
+  Position pos = Position::from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1", false);
+  Limits limits;
+  limits.depth = 4;
+  limits.null_eval_margin = 0;
+
+  const auto result = search(pos, limits);
+  REQUIRE(result.null_attempts > 0);
+
+  const auto attempt = std::find_if(payloads.begin(), payloads.end(), [](const std::string& payload) {
+    return payload.find("null attempt") != std::string::npos;
+  });
+  REQUIRE(attempt != payloads.end());
 
   set_trace_topic(TraceTopic::Search, false);
   set_trace_writer(nullptr);

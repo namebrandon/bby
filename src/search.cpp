@@ -24,7 +24,6 @@ constexpr Score kMateValue = kEvalInfinity - 512;
 constexpr Score mate_score(int ply) { return kMateValue - ply; }
 constexpr Score mated_score(int ply) { return -kMateValue + ply; }
 constexpr int kQuietHistoryBonus = 128;
-constexpr int kNullMoveReduction = 2;
 constexpr Score kAspirationBase = 64;
 constexpr Score kAspirationScale = 16;
 constexpr Score kStaticFutilitySlack = 128;
@@ -76,6 +75,16 @@ struct SearchState {
   std::array<std::array<Move, 2>, kMaxPly> killers{};
   SeeCache see_cache;
   SearchStack stack;
+  bool enable_null_move{true};
+  int null_min_depth{2};
+  int null_base_reduction{2};
+  int null_depth_scale{4};
+  int null_eval_margin{120};
+  int null_verification_depth{1};
+  int null_prunes{0};
+  int null_attempts{0};
+  int null_verifications{0};
+  int lmr_reductions{0};
   std::int64_t nodes{0};
   std::int64_t node_cap{-1};
   bool aborted{false};
@@ -446,20 +455,91 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     }
   }
 
-  if (!in_check && !previous_null && depth >= kNullMoveReduction + 1 &&
+  if (state.enable_null_move && !in_check && !previous_null && depth >= state.null_min_depth &&
       has_sufficient_material_for_null(pos)) {
-    Undo null_undo;
-    state.stack.prepare_child(ply, ply + 1, Move{}, PieceType::None);
-    pos.make_null(null_undo);
-    const Score null_score = -negamax(pos, depth - 1 - kNullMoveReduction,
-                                      -beta, -beta + 1, tables, state, ply + 1,
-                                      nullptr, true);
-    pos.unmake_null(null_undo);
-    if (state.aborted) {
-      return beta;
+    ensure_static_eval();
+    const Score eval_margin = static_eval - beta;
+    int reduction = state.null_base_reduction;
+    if (depth > state.null_min_depth) {
+      reduction += (depth - state.null_min_depth) / std::max(1, state.null_depth_scale);
     }
-    if (null_score >= beta) {
-      return null_score;
+    if (eval_margin > static_cast<Score>(state.null_eval_margin)) {
+      reduction += 1;
+    }
+    reduction = std::clamp(reduction, state.null_base_reduction, depth - 1);
+    const int null_depth = depth - 1 - reduction;
+    if (null_depth >= 0) {
+      ++state.null_attempts;
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search null attempt"
+            << " ply=" << ply
+            << " depth=" << depth
+            << " reduction=" << reduction
+            << " null_depth=" << null_depth
+            << " margin=" << eval_margin;
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+      Undo null_undo;
+      state.stack.prepare_child(ply, ply + 1, Move{}, PieceType::None);
+      pos.make_null(null_undo);
+      const Score null_score = -negamax(pos, null_depth, -beta, -beta + 1, tables, state, ply + 1,
+                                        nullptr, true);
+      pos.unmake_null(null_undo);
+      if (state.aborted) {
+        return beta;
+      }
+      if (null_score >= beta) {
+        bool verified = false;
+        const bool allow_verification = !in_pv && state.null_verification_depth > 0 &&
+                                        null_depth >= state.null_verification_depth;
+        if (allow_verification) {
+          ++state.null_verifications;
+          if (trace_search) {
+            std::ostringstream oss;
+            oss << "trace search null verify"
+                << " ply=" << ply
+                << " depth=" << depth
+                << " null_depth=" << null_depth
+                << " beta=" << beta;
+            trace_emit(TraceTopic::Search, oss.str());
+          }
+          const Score verify_score =
+              negamax(pos, null_depth, beta - 1, beta, tables, state, ply, nullptr, true);
+          if (state.aborted) {
+            return beta;
+          }
+          if (verify_score >= beta) {
+            verified = true;
+          } else if (trace_search) {
+            std::ostringstream oss;
+            oss << "trace search null verify-fail"
+                << " ply=" << ply
+                << " depth=" << depth
+                << " score=" << verify_score
+                << " beta=" << beta;
+            trace_emit(TraceTopic::Search, oss.str());
+          }
+        } else {
+          verified = true;
+        }
+        if (verified) {
+          ++state.null_prunes;
+          if (trace_search) {
+            std::ostringstream oss;
+            oss << "trace search null prune"
+                << " ply=" << ply
+                << " depth=" << depth
+                << " reduction=" << reduction
+                << " null_depth=" << null_depth
+                << " beta=" << beta
+                << " score=" << null_score
+                << " verified=" << (verified ? 1 : 0);
+            trace_emit(TraceTopic::Search, oss.str());
+          }
+          return null_score;
+        }
+      }
     }
   }
 
@@ -618,6 +698,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     const bool lmr_used = reduction > 0;
     if (lmr_used) {
       search_depth = std::max(1, next_depth - reduction);
+      ++state.lmr_reductions;
       if (trace_search) {
         std::ostringstream oss;
         oss << "trace search lmr reduce"
@@ -909,6 +990,16 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.multi_cut_candidates = std::clamp(limits.multi_cut_candidates, 0, 32);
   state.multi_cut_threshold = std::clamp(limits.multi_cut_threshold, 0, 32);
   state.multi_cut_prunes = 0;
+  state.enable_null_move = limits.enable_null_move;
+  state.null_min_depth = std::clamp(limits.null_min_depth, 1, 64);
+  state.null_base_reduction = std::max(1, limits.null_base_reduction);
+  state.null_depth_scale = std::max(1, limits.null_depth_scale);
+  state.null_eval_margin = std::max(0, limits.null_eval_margin);
+  state.null_verification_depth = std::max(0, limits.null_verification_depth);
+  state.null_prunes = 0;
+  state.null_attempts = 0;
+  state.null_verifications = 0;
+  state.lmr_reductions = 0;
   state.start_time = std::chrono::steady_clock::now();
   const TimeBudget time_budget = compute_time_budget(limits, root.side_to_move());
   state.hard_time_ms = time_budget.hard_ms;
@@ -1148,6 +1239,10 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   result.static_futility_prunes = state.static_futility_prunes;
   result.razor_prunes = state.razor_prunes;
   result.multi_cut_prunes = state.multi_cut_prunes;
+  result.null_prunes = state.null_prunes;
+  result.null_attempts = state.null_attempts;
+  result.null_verifications = state.null_verifications;
+  result.lmr_reductions = state.lmr_reductions;
   const auto finish_time = std::chrono::steady_clock::now();
   const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               finish_time - state.start_time)

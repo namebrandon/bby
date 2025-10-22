@@ -36,6 +36,10 @@ struct SearchResult {
   int static_futility_prunes{0};
   int razor_prunes{0};
   int multi_cut_prunes{0};
+  int null_prunes{0};
+  int null_attempts{0};
+  int null_verifications{0};
+  int lmr_reductions{0};
   std::int64_t elapsed_ms{0};
   int hashfull{0};
   bool tt_hit{false};
