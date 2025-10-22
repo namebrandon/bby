@@ -299,15 +299,20 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
     } else if (move == ctx.killers[1]) {
       score += kKillerSecondary;
     } else if (!is_capture_like(flag)) {
-      score += history_score(ctx.history, pos, move);
+      const int hist = history_score(ctx.history, pos, move);
+      score += static_cast<int>(std::lround(ctx.history_weight * static_cast<double>(hist)));
       if (!ctx.parent_move.is_null()) {
         const std::size_t prev_idx = CounterHistory::index(ctx.parent_move);
         if (ctx.counter_history != nullptr) {
-          score += ctx.counter_history->get(prev_idx, move) / 2;
+          const int counter_val = ctx.counter_history->get(prev_idx, move);
+          score += static_cast<int>(std::lround(ctx.counter_history_weight *
+                                               static_cast<double>(counter_val)));
         }
         if (ctx.continuation_history != nullptr) {
           const Piece parent_piece = pos.piece_on(to_square(ctx.parent_move));
-          score += ctx.continuation_history->get(parent_piece, move) / 2;
+          const int cont_val = ctx.continuation_history->get(parent_piece, move);
+          score += static_cast<int>(std::lround(ctx.continuation_history_weight *
+                                               static_cast<double>(cont_val)));
         }
       }
     }

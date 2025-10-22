@@ -110,6 +110,9 @@ struct SearchState {
   SeeCache see_cache;
   std::unique_ptr<CounterHistory> counter_history;
   std::unique_ptr<ContinuationHistory> continuation_history;
+  double history_weight{1.0};
+  double counter_history_weight{0.5};
+  double continuation_history_weight{0.5};
   SearchStack stack;
   bool enable_null_move{true};
   int null_min_depth{2};
@@ -635,6 +638,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   ordering.history = &state.history;
   ordering.counter_history = state.counter_history.get();
   ordering.continuation_history = state.continuation_history.get();
+  ordering.history_weight = state.history_weight;
+  ordering.counter_history_weight = state.counter_history_weight;
+  ordering.continuation_history_weight = state.continuation_history_weight;
   ordering.see_cache = &state.see_cache;
   if (static_cast<std::size_t>(ply) < state.killers.size()) {
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
@@ -1162,6 +1168,10 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.multi_cut_candidates = std::clamp(limits.multi_cut_candidates, 0, 32);
   state.multi_cut_threshold = std::clamp(limits.multi_cut_threshold, 0, 32);
   state.multi_cut_prunes = 0;
+  state.history_weight = std::clamp(limits.history_weight_scale, 0, 400) / 100.0;
+  state.counter_history_weight = std::clamp(limits.counter_history_weight_scale, 0, 400) / 100.0;
+  state.continuation_history_weight =
+      std::clamp(limits.continuation_history_weight_scale, 0, 400) / 100.0;
   state.enable_null_move = limits.enable_null_move;
   state.null_min_depth = std::clamp(limits.null_min_depth, 1, 64);
   state.null_base_reduction = std::max(1, limits.null_base_reduction);

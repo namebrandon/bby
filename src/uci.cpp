@@ -466,6 +466,9 @@ struct UciState {
   int multi_cut_reduction{2};
   int multi_cut_candidates{8};
   int multi_cut_threshold{3};
+  int history_weight_scale{100};
+  int counter_history_weight_scale{50};
+  int continuation_history_weight_scale{50};
   InitState init;
   bool have_last_limits{false};
   bool analysis_auto_restart{false};
@@ -518,6 +521,12 @@ void emit_options(const UciState& state) {
                              std::to_string(state.multi_cut_candidates));
   write_line(state.io, "option name Multi-Cut Threshold type spin default 3 min 1 max 16 value " +
                              std::to_string(state.multi_cut_threshold));
+  write_line(state.io, "option name History Weight (x100) type spin default 100 min 0 max 400 value " +
+                             std::to_string(state.history_weight_scale));
+  write_line(state.io, "option name Counter History Weight (x100) type spin default 50 min 0 max 400 value " +
+                             std::to_string(state.counter_history_weight_scale));
+  write_line(state.io, "option name Continuation History Weight (x100) type spin default 50 min 0 max 400 value " +
+                             std::to_string(state.continuation_history_weight_scale));
   write_line(state.io, "option name Bench Nodes Limit type spin default 0 min 0 max 10000000 value " +
                              std::to_string(state.bench_nodes_limit));
 }
@@ -624,6 +633,12 @@ void handle_position(UciState& state, std::string_view args) {
     limits.multi_cut_reduction = state.multi_cut_reduction;
     limits.multi_cut_candidates = state.multi_cut_candidates;
     limits.multi_cut_threshold = state.multi_cut_threshold;
+    limits.history_weight_scale = state.history_weight_scale;
+    limits.counter_history_weight_scale = state.counter_history_weight_scale;
+    limits.continuation_history_weight_scale = state.continuation_history_weight_scale;
+    limits.history_weight_scale = state.history_weight_scale;
+    limits.counter_history_weight_scale = state.counter_history_weight_scale;
+    limits.continuation_history_weight_scale = state.continuation_history_weight_scale;
     state.last_limits = limits;
     state.worker.start_search(state.pos, limits);
   }
@@ -693,6 +708,23 @@ void handle_setoption(UciState& state, std::string_view args) {
     if (auto parsed = parse_double(value)) {
       const int rounded = static_cast<int>(std::llround(*parsed));
       state.lmr_min_move = static_cast<int>(std::clamp<std::int64_t>(rounded, 1, 64));
+    }
+  } else if (name == "History Weight (x100)") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.history_weight_scale = static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 400));
+    }
+  } else if (name == "Counter History Weight (x100)") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.counter_history_weight_scale =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 400));
+    }
+  } else if (name == "Continuation History Weight (x100)") {
+    if (auto parsed = parse_double(value)) {
+      const int rounded = static_cast<int>(std::llround(*parsed));
+      state.continuation_history_weight_scale =
+          static_cast<int>(std::clamp<std::int64_t>(rounded, 0, 400));
     }
   } else if (name == "Static Futility") {
     std::string lowered = value;
@@ -844,6 +876,9 @@ void handle_go(UciState& state, std::string_view args) {
   limits.multi_cut_reduction = state.multi_cut_reduction;
   limits.multi_cut_candidates = state.multi_cut_candidates;
   limits.multi_cut_threshold = state.multi_cut_threshold;
+  limits.history_weight_scale = state.history_weight_scale;
+  limits.counter_history_weight_scale = state.counter_history_weight_scale;
+  limits.continuation_history_weight_scale = state.continuation_history_weight_scale;
 
   state.last_limits = limits;
   state.have_last_limits = true;

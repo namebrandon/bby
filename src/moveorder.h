@@ -80,6 +80,9 @@ struct OrderingContext {
   std::array<Move, 2> killers{};
   int ply{0};
   Move parent_move{};
+  double history_weight{1.0};
+  double counter_history_weight{0.5};
+  double continuation_history_weight{0.5};
 };
 
 constexpr int kSeeUnknown = std::numeric_limits<int>::min();

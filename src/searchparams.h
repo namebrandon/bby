@@ -33,6 +33,9 @@ struct Limits {
   int multi_cut_reduction{2};
   int multi_cut_candidates{8};
   int multi_cut_threshold{3};
+  int history_weight_scale{100};
+  int counter_history_weight_scale{50};
+  int continuation_history_weight_scale{50};
   bool enable_null_move{true};
   int null_min_depth{2};
   int null_base_reduction{2};
