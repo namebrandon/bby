@@ -254,6 +254,26 @@ TEST_CASE("Null-move pruning adapts reduction and provides trace", "[search][nul
   g_trace_sink = nullptr;
 }
 
+TEST_CASE("Recapture extensions trigger on immediate reply", "[search][extension][recapture]") {
+  Position pos = Position::from_fen("4k3/8/2p5/3p4/4P3/8/8/4K3 w - - 0 1", false);
+  Limits limits;
+  limits.depth = 4;
+  limits.recapture_extension_depth = 5;
+
+  const auto result = search(pos, limits);
+  REQUIRE(result.recapture_extensions > 0);
+}
+
+TEST_CASE("Checking moves receive extensions when enabled", "[search][extension][check]") {
+  Position pos = Position::from_fen("4k3/8/8/4Q3/8/8/8/4K3 w - - 0 1", false);
+  Limits limits;
+  limits.depth = 3;
+  limits.check_extension_depth = 5;
+
+  const auto result = search(pos, limits);
+  REQUIRE(result.check_extensions > 0);
+}
+
 TEST_CASE("Static futility pruning can skip hopeless branches", "[search][futility]") {
   const std::string fen =
       "6k1/5ppp/8/8/8/8/5PPP/6KQ w - - 0 1";

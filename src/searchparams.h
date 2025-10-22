@@ -39,6 +39,10 @@ struct Limits {
   int null_depth_scale{4};
   int null_eval_margin{120};
   int null_verification_depth{1};
+  bool enable_recapture_extension{true};
+  bool enable_check_extension{true};
+  int recapture_extension_depth{4};
+  int check_extension_depth{3};
   bool infinite{false};
 };
 

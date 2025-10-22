@@ -85,6 +85,12 @@ struct SearchState {
   int null_attempts{0};
   int null_verifications{0};
   int lmr_reductions{0};
+  bool enable_recapture_extension{true};
+  bool enable_check_extension{true};
+  int recapture_extension_depth{4};
+  int check_extension_depth{3};
+  int recapture_extensions{0};
+  int check_extensions{0};
   std::int64_t nodes{0};
   std::int64_t node_cap{-1};
   bool aborted{false};
@@ -156,6 +162,12 @@ bool has_sufficient_material_for_null(const Position& pos) {
 bool is_quiet_move(Move move) {
   const MoveFlag flag = move_flag(move);
   return flag == MoveFlag::Quiet || flag == MoveFlag::DoublePush;
+}
+
+bool is_capture_move(Move move) {
+  const MoveFlag flag = move_flag(move);
+  return flag == MoveFlag::Capture || flag == MoveFlag::EnPassant ||
+         flag == MoveFlag::PromotionCapture;
 }
 
 void update_killers(SearchState& state, int ply, Move move) {
@@ -258,13 +270,18 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
   if (tt_entry.bound != BoundType::Lower) {
     return false;
   }
-  const int margin = g_singular_margin.load(std::memory_order_relaxed);
+  int margin = g_singular_margin.load(std::memory_order_relaxed);
   if (margin <= 0) {
     return false;
   }
-  if (margin <= 0) {
-    return false;
+  const SearchStack::Frame& frame = state.stack.frame(ply);
+  if (frame.captured != PieceType::None) {
+    margin = (margin * 3) / 4;
   }
+  if (!state.stack.is_improving(ply)) {
+    margin = (margin * 3) / 4;
+  }
+  margin = std::max(16, margin);
   const Score singular_beta = tt_entry.score - static_cast<Score>(margin);
   const Score singular_alpha = singular_beta - 1;
   if (singular_beta <= -kEvalInfinity) {
@@ -657,13 +674,32 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     }
     const bool is_primary_move = (processed_moves == 0);
     const Color moving_side = pos.side_to_move();
+    const Move parent_move = stack_frame.parent_move;
+    const PieceType parent_capture = stack_frame.captured;
+    const bool singular_hit = singular_extension && move == tt_entry.best_move;
     Undo undo;
     pos.make(move, undo);
-    const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
-    const int next_depth = depth - 1 + extension;
     const PieceType captured_type =
         (undo.captured != Piece::None) ? type_of(undo.captured) : PieceType::None;
-    state.stack.prepare_child(ply, ply + 1, move, captured_type);
+    const bool gives_check = pos.in_check(pos.side_to_move());
+    bool recapture_extension = false;
+    bool check_extension = false;
+    int extension = 0;
+    if (singular_hit) {
+      extension = std::max(extension, 1);
+    }
+    if (state.enable_recapture_extension && depth <= state.recapture_extension_depth &&
+        !parent_move.is_null() && parent_capture != PieceType::None && is_capture_move(move) &&
+        to_square(move) == to_square(parent_move)) {
+      recapture_extension = true;
+      extension = std::max(extension, 1);
+    }
+    if (state.enable_check_extension && gives_check && depth <= state.check_extension_depth) {
+      check_extension = true;
+      extension = std::max(extension, 1);
+    }
+    extension = std::min(extension, 2);
+    const int next_depth = depth - 1 + extension;
     int reduction = 0;
     const bool root_node = (ply == 0);
     const bool allow_lmr = !is_primary_move && !in_check && extension == 0 &&
@@ -689,7 +725,29 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       trace_emit(TraceTopic::Search, oss.str());
     }
 
-    const bool gives_check = pos.in_check(pos.side_to_move());
+    if (recapture_extension) {
+      ++state.recapture_extensions;
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search extend recapture"
+            << " ply=" << ply
+            << " move=" << move_to_uci(move)
+            << " depth=" << depth;
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+    }
+    if (check_extension) {
+      ++state.check_extensions;
+      if (trace_search) {
+        std::ostringstream oss;
+        oss << "trace search extend check"
+            << " ply=" << ply
+            << " move=" << move_to_uci(move)
+            << " depth=" << depth;
+        trace_emit(TraceTopic::Search, oss.str());
+      }
+    }
+    state.stack.prepare_child(ply, ply + 1, move, captured_type);
     if (gives_check) {
       reduction = 0;
     }
@@ -1000,6 +1058,12 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   state.null_attempts = 0;
   state.null_verifications = 0;
   state.lmr_reductions = 0;
+  state.enable_recapture_extension = limits.enable_recapture_extension;
+  state.enable_check_extension = limits.enable_check_extension;
+  state.recapture_extension_depth = std::clamp(limits.recapture_extension_depth, 0, 16);
+  state.check_extension_depth = std::clamp(limits.check_extension_depth, 0, 16);
+  state.recapture_extensions = 0;
+  state.check_extensions = 0;
   state.start_time = std::chrono::steady_clock::now();
   const TimeBudget time_budget = compute_time_budget(limits, root.side_to_move());
   state.hard_time_ms = time_budget.hard_ms;
@@ -1243,6 +1307,8 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
   result.null_attempts = state.null_attempts;
   result.null_verifications = state.null_verifications;
   result.lmr_reductions = state.lmr_reductions;
+  result.recapture_extensions = state.recapture_extensions;
+  result.check_extensions = state.check_extensions;
   const auto finish_time = std::chrono::steady_clock::now();
   const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               finish_time - state.start_time)
