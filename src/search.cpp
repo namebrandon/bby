@@ -1203,7 +1203,8 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
 
   emit_search_trace_start(root, limits);
 
-  const int max_depth = limits.depth > 0 ? limits.depth : 1;
+  const int max_depth =
+      (limits.depth > 0) ? limits.depth : (limits.depth == 0 ? 1 : kMaxPly);
   const int requested_multipv = std::clamp(limits.multipv > 0 ? limits.multipv : 1, 1,
                                           static_cast<int>(kMaxMoves));
 
