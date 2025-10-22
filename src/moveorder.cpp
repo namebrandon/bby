@@ -180,6 +180,59 @@ std::size_t HistoryTable::index(Color color, Move move) {
   return idx;
 }
 
+int CounterHistory::get(std::size_t previous_index, Move move) const {
+  if (previous_index >= kStride) {
+    return 0;
+  }
+  const std::size_t idx = index(move);
+  return values[previous_index][idx];
+}
+
+void CounterHistory::add(std::size_t previous_index, Move move, int delta) {
+  if (previous_index >= kStride) {
+    return;
+  }
+  const std::size_t idx = index(move);
+  auto& table = values[previous_index];
+  int value = table[idx] + delta;
+  constexpr int kMaxHistory = 32'000;
+  value = std::clamp(value, -kMaxHistory, kMaxHistory);
+  table[idx] = value;
+}
+
+std::size_t CounterHistory::index(Move move) {
+  const int from = static_cast<int>(from_square(move));
+  const int to = static_cast<int>(to_square(move));
+  return static_cast<std::size_t>(from) * 64 + static_cast<std::size_t>(to);
+}
+
+int ContinuationHistory::get(Piece piece, Move move) const {
+  if (piece == Piece::None) {
+    return 0;
+  }
+  const std::size_t idx = index(piece, move);
+  return values[static_cast<std::size_t>(piece) - 1][idx];
+}
+
+void ContinuationHistory::add(Piece piece, Move move, int delta) {
+  if (piece == Piece::None) {
+    return;
+  }
+  const std::size_t idx = index(piece, move);
+  auto& table = values[static_cast<std::size_t>(piece) - 1];
+  int value = table[idx] + delta;
+  constexpr int kMaxHistory = 32'000;
+  value = std::clamp(value, -kMaxHistory, kMaxHistory);
+  table[idx] = value;
+}
+
+std::size_t ContinuationHistory::index(Piece piece, Move move) {
+  BBY_ASSERT(piece != Piece::None);
+  const int from = static_cast<int>(from_square(move));
+  const int to = static_cast<int>(to_square(move));
+  return static_cast<std::size_t>(from) * 64 + static_cast<std::size_t>(to);
+}
+
 void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxMoves>& scores,
                  std::array<int, kMaxMoves>* see_results, bool force_see) {
   BBY_ASSERT(ctx.pos != nullptr);
@@ -247,6 +300,16 @@ void score_moves(MoveList& ml, const OrderingContext& ctx, std::array<int, kMaxM
       score += kKillerSecondary;
     } else if (!is_capture_like(flag)) {
       score += history_score(ctx.history, pos, move);
+      if (!ctx.parent_move.is_null()) {
+        const std::size_t prev_idx = CounterHistory::index(ctx.parent_move);
+        if (ctx.counter_history != nullptr) {
+          score += ctx.counter_history->get(prev_idx, move) / 2;
+        }
+        if (ctx.continuation_history != nullptr) {
+          const Piece parent_piece = pos.piece_on(to_square(ctx.parent_move));
+          score += ctx.continuation_history->get(parent_piece, move) / 2;
+        }
+      }
     }
 
     scores[idx] = score;

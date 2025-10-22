@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cmath>
 #include <iomanip>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <vector>
@@ -107,6 +108,8 @@ struct SearchState {
   HistoryTable history;
   std::array<std::array<Move, 2>, kMaxPly> killers{};
   SeeCache see_cache;
+  std::unique_ptr<CounterHistory> counter_history;
+  std::unique_ptr<ContinuationHistory> continuation_history;
   SearchStack stack;
   bool enable_null_move{true};
   int null_min_depth{2};
@@ -221,6 +224,24 @@ void update_history(SearchState& state, Color side, Move move, int bonus) {
     return;
   }
   state.history.add(side, move, bonus);
+}
+
+void update_counter_history(SearchState& state, Move parent_move, Move move, int bonus) {
+  if (parent_move.is_null() || move.is_null()) {
+    return;
+  }
+  if (!state.counter_history) {
+    return;
+  }
+  const std::size_t prev_idx = CounterHistory::index(parent_move);
+  state.counter_history->add(prev_idx, move, bonus);
+}
+
+void update_continuation_history(SearchState& state, Piece parent_piece, Move move, int bonus) {
+  if (move.is_null() || parent_piece == Piece::None || !state.continuation_history) {
+    return;
+  }
+  state.continuation_history->add(parent_piece, move, bonus);
 }
 
 void emit_search_trace_start(const Position& root, const Limits& limits) {
@@ -612,10 +633,13 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   ordering.pos = &pos;
   ordering.ply = ply;
   ordering.history = &state.history;
+  ordering.counter_history = state.counter_history.get();
+  ordering.continuation_history = state.continuation_history.get();
   ordering.see_cache = &state.see_cache;
   if (static_cast<std::size_t>(ply) < state.killers.size()) {
     ordering.killers = state.killers[static_cast<std::size_t>(ply)];
   }
+  ordering.parent_move = stack_frame.parent_move;
   if (tt_hit) {
     ordering.tt = &tt_entry;
   }
@@ -719,6 +743,7 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     const Score alpha_before_move = alpha;
     const bool cut_node = alpha > alpha_orig;
     const Move parent_move = stack_frame.parent_move;
+    const Piece parent_piece = parent_move.is_null() ? Piece::None : pos.piece_on(to_square(parent_move));
     const PieceType parent_capture = stack_frame.captured;
     const bool singular_hit = singular_extension && move == tt_entry.best_move;
     Undo undo;
@@ -888,6 +913,13 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
       if (quiet) {
         const int bonus = kQuietHistoryBonus * depth * depth;
         update_history(state, pos.side_to_move(), move, bonus);
+        if (!parent_move.is_null()) {
+          const int scaled_bonus = std::max(1, bonus / 2);
+          update_counter_history(state, parent_move, move, scaled_bonus);
+          if (parent_piece != Piece::None) {
+            update_continuation_history(state, parent_piece, move, scaled_bonus);
+          }
+        }
       }
     }
 
@@ -896,11 +928,27 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
         update_killers(state, ply, move);
         const int bonus = kQuietHistoryBonus * depth * depth;
         update_history(state, pos.side_to_move(), move, bonus);
+        if (!parent_move.is_null()) {
+          const int scaled_bonus = std::max(1, bonus / 2);
+          update_counter_history(state, parent_move, move, scaled_bonus);
+          if (parent_piece != Piece::None) {
+            update_continuation_history(state, parent_piece, move, scaled_bonus);
+          }
+        }
       }
       const int penalty = kQuietHistoryBonus * depth;
       for (int idx = 0; idx < failed_quiet_count; ++idx) {
         update_history(state, moving_side, failed_quiets[static_cast<std::size_t>(idx)],
                        -penalty);
+        if (!parent_move.is_null()) {
+          const int scaled_penalty = std::max(1, penalty / 2);
+          update_counter_history(state, parent_move, failed_quiets[static_cast<std::size_t>(idx)],
+                                 -scaled_penalty);
+          if (parent_piece != Piece::None) {
+            update_continuation_history(state, parent_piece,
+                                        failed_quiets[static_cast<std::size_t>(idx)], -scaled_penalty);
+          }
+        }
       }
       state.quiet_penalties += failed_quiet_count;
       break;
@@ -1091,6 +1139,8 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
                     const SearchProgressFn* progress, const CurrmoveFn* currmove) {
   SearchTables tables;
   SearchState state;
+  state.counter_history = std::make_unique<CounterHistory>();
+  state.continuation_history = std::make_unique<ContinuationHistory>();
   state.see_cache.clear();
   state.nodes = 0;
   state.node_cap = limits.nodes;

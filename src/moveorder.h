@@ -48,13 +48,38 @@ private:
   [[nodiscard]] static std::size_t index(Color color, Move move);
 };
 
+struct CounterHistory {
+  static constexpr std::size_t kStride = HistoryTable::kStride;
+  std::array<std::array<int, kStride>, kStride> values{};
+
+  [[nodiscard]] int get(std::size_t previous_index, Move move) const;
+  void add(std::size_t previous_index, Move move, int delta);
+
+  [[nodiscard]] static std::size_t index(Move move);
+};
+
+struct ContinuationHistory {
+  // Piece (12 without None) × destination square.
+  static constexpr std::size_t kPieceCount = 12;
+  std::array<std::array<int, HistoryTable::kStride>, kPieceCount> values{};
+
+  [[nodiscard]] int get(Piece piece, Move move) const;
+  void add(Piece piece, Move move, int delta);
+
+private:
+  [[nodiscard]] static std::size_t index(Piece piece, Move move);
+};
+
 struct OrderingContext {
   const Position* pos{nullptr};
   const TTEntry* tt{nullptr};
   const HistoryTable* history{nullptr};
+  const CounterHistory* counter_history{nullptr};
+  const ContinuationHistory* continuation_history{nullptr};
   SeeCache* see_cache{nullptr};
   std::array<Move, 2> killers{};
   int ply{0};
+  Move parent_move{};
 };
 
 constexpr int kSeeUnknown = std::numeric_limits<int>::min();
