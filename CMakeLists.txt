@@ -70,6 +70,7 @@ add_library(bby_core
   src/pgn.cpp
   src/epd.cpp
   src/search.cpp
+  src/search_stack.cpp
   src/qsearch_probe.cpp
   src/timeman.cpp
   src/uci.cpp

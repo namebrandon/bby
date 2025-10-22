@@ -13,6 +13,7 @@
 
 #include "debug.h"
 #include "qsearch_probe.h"
+#include "search_stack.h"
 
 namespace bby {
 namespace {
@@ -74,6 +75,7 @@ struct SearchState {
   HistoryTable history;
   std::array<std::array<Move, 2>, kMaxPly> killers{};
   SeeCache see_cache;
+  SearchStack stack;
   std::int64_t nodes{0};
   std::int64_t node_cap{-1};
   bool aborted{false};
@@ -271,6 +273,9 @@ bool should_extend_singular(Position& pos, const MoveList& moves, Move tt_move,
     }
     Undo undo;
     pos.make(move, undo);
+    const PieceType captured_type =
+        (undo.captured != Piece::None) ? type_of(undo.captured) : PieceType::None;
+    state.stack.prepare_child(ply, ply + 1, move, captured_type);
     const Score score =
         -negamax(pos, reduced_depth, -singular_beta, -singular_alpha, tables, state,
                  ply + 1, nullptr, previous_null);
@@ -320,8 +325,25 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
   }
   const bool in_pv = (pv_table != nullptr);
   const bool trace_search = trace_enabled(TraceTopic::Search);
+  BBY_ASSERT(ply >= 0 && ply < kMaxPly);
   Score static_eval = 0;
   bool have_static_eval = false;
+  SearchStack::Frame& stack_frame = state.stack.frame(ply);
+  auto ensure_static_eval = [&]() {
+    if (!have_static_eval) {
+      static_eval = evaluate(pos);
+      have_static_eval = true;
+    }
+    if (!stack_frame.has_static_eval) {
+      state.stack.set_static_eval(ply, static_eval);
+    } else {
+      static_eval = stack_frame.static_eval;
+    }
+  };
+  auto improving_now = [&]() -> bool {
+    ensure_static_eval();
+    return state.stack.is_improving(ply);
+  };
   if (in_pv) {
     pv_table->reset_row(ply);
   }
@@ -355,66 +377,79 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
 
   if (!in_check && state.enable_static_futility && state.static_futility_depth > 0 &&
       ply > 0 && !in_pv && !previous_null && depth <= state.static_futility_depth) {
-    static_eval = evaluate(pos);
-    have_static_eval = true;
-    const Score margin =
-        static_cast<Score>(state.static_futility_margin * std::max(depth, 1));
-    Score futility_value = static_eval + margin - kStaticFutilitySlack;
-    futility_value = std::clamp(futility_value, static_cast<Score>(-kEvalInfinity),
-                                static_cast<Score>(kEvalInfinity));
-    if (futility_value <= alpha) {
-      if (trace_search) {
-        std::ostringstream oss;
-        oss << "trace search static futility"
-            << " ply=" << ply
-            << " depth=" << depth
-            << " alpha=" << alpha
-            << " static=" << static_eval
-            << " margin=" << margin
-            << " value=" << futility_value;
-        trace_emit(TraceTopic::Search, oss.str());
+    const bool improving = improving_now();
+    if (!improving) {
+      const Score margin =
+          static_cast<Score>(state.static_futility_margin * std::max(depth, 1));
+      Score futility_value = static_eval + margin - kStaticFutilitySlack;
+      futility_value = std::clamp(futility_value, static_cast<Score>(-kEvalInfinity),
+                                  static_cast<Score>(kEvalInfinity));
+      if (futility_value <= alpha) {
+        if (trace_search) {
+          std::ostringstream oss;
+          oss << "trace search static futility"
+              << " ply=" << ply
+              << " depth=" << depth
+              << " alpha=" << alpha
+              << " static=" << static_eval
+              << " margin=" << margin
+              << " value=" << futility_value;
+          trace_emit(TraceTopic::Search, oss.str());
+        }
+        ++state.static_futility_prunes;
+        return futility_value;
       }
-      ++state.static_futility_prunes;
-      return futility_value;
+    } else if (trace_search) {
+      std::ostringstream oss;
+      oss << "trace search static futility skip-improving"
+          << " ply=" << ply
+          << " depth=" << depth;
+      trace_emit(TraceTopic::Search, oss.str());
     }
   }
 
   if (!in_check && state.enable_razoring && state.razor_depth > 0 && ply > 0 &&
       !in_pv && !previous_null && depth <= state.razor_depth) {
-    if (!have_static_eval) {
-      static_eval = evaluate(pos);
-      have_static_eval = true;
-    }
-    const Score margin =
-        static_cast<Score>(state.razor_margin * std::max(depth, 1));
-    const Score threshold =
-        std::clamp(static_eval + margin - kRazoringSlack, static_cast<Score>(-kEvalInfinity),
-                   static_cast<Score>(kEvalInfinity));
-    if (threshold <= alpha) {
-      if (trace_search) {
-        std::ostringstream oss;
-        oss << "trace search razoring"
-            << " ply=" << ply
-            << " depth=" << depth
-            << " alpha=" << alpha
-            << " static=" << static_eval
-            << " margin=" << margin;
-        trace_emit(TraceTopic::Search, oss.str());
+    const bool improving = improving_now();
+    if (!improving) {
+      const Score margin =
+          static_cast<Score>(state.razor_margin * std::max(depth, 1));
+      const Score threshold =
+          std::clamp(static_eval + margin - kRazoringSlack, static_cast<Score>(-kEvalInfinity),
+                     static_cast<Score>(kEvalInfinity));
+      if (threshold <= alpha) {
+        if (trace_search) {
+          std::ostringstream oss;
+          oss << "trace search razoring"
+              << " ply=" << ply
+              << " depth=" << depth
+              << " alpha=" << alpha
+              << " static=" << static_eval
+              << " margin=" << margin;
+          trace_emit(TraceTopic::Search, oss.str());
+        }
+        const Score razor_score = qsearch(pos, alpha, beta, tables, state, ply);
+        if (state.aborted) {
+          return razor_score;
+        }
+        if (razor_score <= alpha + kRazoringSlack) {
+          ++state.razor_prunes;
+          return razor_score;
+        }
       }
-      const Score razor_score = qsearch(pos, alpha, beta, tables, state, ply);
-      if (state.aborted) {
-        return razor_score;
-      }
-      if (razor_score <= alpha + kRazoringSlack) {
-        ++state.razor_prunes;
-        return razor_score;
-      }
+    } else if (trace_search) {
+      std::ostringstream oss;
+      oss << "trace search razoring skip-improving"
+          << " ply=" << ply
+          << " depth=" << depth;
+      trace_emit(TraceTopic::Search, oss.str());
     }
   }
 
   if (!in_check && !previous_null && depth >= kNullMoveReduction + 1 &&
       has_sufficient_material_for_null(pos)) {
     Undo null_undo;
+    state.stack.prepare_child(ply, ply + 1, Move{}, PieceType::None);
     pos.make_null(null_undo);
     const Score null_score = -negamax(pos, depth - 1 - kNullMoveReduction,
                                       -beta, -beta + 1, tables, state, ply + 1,
@@ -481,6 +516,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
           }
           Undo undo;
           pos.make(move, undo);
+          const PieceType captured_type =
+              (undo.captured != Piece::None) ? type_of(undo.captured) : PieceType::None;
+          state.stack.prepare_child(ply, ply + 1, move, captured_type);
           const Score cut_score = -negamax(pos, reduced_depth, -beta, -beta + 1, tables, state,
                                            ply + 1, nullptr, false);
           pos.unmake(move, undo);
@@ -543,6 +581,9 @@ Score negamax(Position& pos, int depth, Score alpha, Score beta, SearchTables& t
     pos.make(move, undo);
     const int extension = (singular_extension && move == tt_entry.best_move) ? 1 : 0;
     const int next_depth = depth - 1 + extension;
+    const PieceType captured_type =
+        (undo.captured != Piece::None) ? type_of(undo.captured) : PieceType::None;
+    state.stack.prepare_child(ply, ply + 1, move, captured_type);
     int reduction = 0;
     const bool root_node = (ply == 0);
     const bool allow_lmr = !is_primary_move && !in_check && extension == 0 &&
@@ -969,6 +1010,7 @@ SearchResult search(Position& root, const Limits& limits, std::atomic<bool>* sto
           trace_emit(TraceTopic::Search, oss.str());
         }
 
+        state.stack.prepare_root();
         score = negamax(root, current_depth, alpha, beta, tables, state, 0, &pv_table, false);
         if (state.aborted) {
           aborted_depth = true;
